@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+myenve/
+venv/
+env/
+
+# Django
+*.log
+db.sqlite3
+media/
+
+# Upload folders
+OfferLetters/
+Profile_Images/
+proofs/
+payslips/
+resignation_letters/
+
+# Excel / docs / pdf
+*.xlsx
+*.xls
+*.docx
+*.pdf
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Large files
+*.msi
+nohup.out

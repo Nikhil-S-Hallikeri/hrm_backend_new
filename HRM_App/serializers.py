@@ -68,7 +68,7 @@ class FresherApplicationSerializer(serializers.ModelSerializer):
         model=CandidateApplicationModel
         fields=["id",'CandidateId','FirstName','LastName','Email','PrimaryContact','SecondaryContact','Location','Fresher',"current_position",'Gender',"DOB",
                 'HighestQualification','University','Specialization','Percentage','YearOfPassout','TechnicalSkills',
-                'GeneralSkills','SoftSkills','AppliedDesignation','ExpectedSalary','ContactedBy','JobPortalSource',"Other_jps","Referred_by",'AppliedDate',"Appling_for"]
+                'GeneralSkills','SoftSkills','AppliedDesignation','ExpectedSalary','ContactedBy','JobPortalSource',"Other_jps","Referred_by",'AppliedDate',"Appling_for",'Final_Results'] #22/05/2026
     
     def to_representation(self, instance):
         representation = super().to_representation(instance)
@@ -79,7 +79,7 @@ class FresherApplicationSerializer(serializers.ModelSerializer):
         elif instance.JobPortalSource=="referral":
             portals= f"{instance.JobPortalSource}(By-{instance.Referred_by})" if instance.Referred_by else f"{instance.JobPortalSource}(By- not filled)"
         # representation['AppliedDate']=instance.AppliedDate.date().strftime('%d-%m-%Y')
-        representation['JobPortalSource']=portals.title()
+        representation['JobPortalSource']=portals.title() if portals else None
         return representation
         
 class ExperienceApplicationSerializer(serializers.ModelSerializer):
@@ -87,7 +87,7 @@ class ExperienceApplicationSerializer(serializers.ModelSerializer):
         model=CandidateApplicationModel
         fields=["id",'CandidateId','FirstName','LastName','Email','PrimaryContact','SecondaryContact','Location','Gender',"DOB",'Experience',"current_position",
                 'HighestQualification','University','Specialization','Percentage','YearOfPassout','TechnicalSkills_with_Exp',
-                'GeneralSkills_with_Exp','SoftSkills_with_Exp','JobPortalSource',"Other_jps","Referred_by",'AppliedDesignation','NoticePeriod','CurrentDesignation','CurrentCTC','TotalExperience','ExpectedSalary','ContactedBy','AppliedDate',"Appling_for"]
+                'GeneralSkills_with_Exp','SoftSkills_with_Exp','JobPortalSource',"Other_jps","Referred_by",'AppliedDesignation','NoticePeriod','CurrentDesignation','CurrentCTC','TotalExperience','ExpectedSalary','ContactedBy','AppliedDate',"Appling_for",'Final_Results'] #22/05/2026
     
     def to_representation(self, instance):
         representation = super().to_representation(instance)
@@ -99,7 +99,7 @@ class ExperienceApplicationSerializer(serializers.ModelSerializer):
             portals= f"{instance.JobPortalSource}(By-{instance.Referred_by})" if instance.Referred_by else f"{instance.JobPortalSource}(By- not filled)"
         
         # representation['AppliedDate']=instance.AppliedDate.date()
-        representation['JobPortalSource']=portals.title()
+        representation['JobPortalSource']=portals.title() if portals else None
 
         return representation
 
@@ -297,6 +297,7 @@ class NewScreeningAssigningSerializer(serializers.ModelSerializer):
         representation['assigner_Id'] = instance.AssignedBy.id
         representation['Recruiter'] = instance.Recruiter.EmployeeId
         representation['AssignedBy'] = instance.AssignedBy.EmployeeId
+        representation['Final_Results'] = instance.Candidate.Final_Results #22/05/2026
         return representation
     
 class NewInterviewSchedulSerializer(serializers.ModelSerializer):
@@ -323,6 +324,7 @@ class NewInterviewSchedulSerializer(serializers.ModelSerializer):
         representation["ScheduledBy"]=instance.ScheduledBy.EmployeeId
         representation["ScheduledBy_name"]=instance.ScheduledBy.Name
         representation["ScheduledBy_Id"]=instance.ScheduledBy.id
+        representation['Final_Results'] = instance.Candidate.Final_Results #22/05/2026
         return representation
 
 class CandidateExcelUploadSerializer(serializers.Serializer):
@@ -406,10 +408,24 @@ class ClientHRInterviewReviewSerializer(serializers.ModelSerializer):
             return requirement
         return {}
 
+# 18/03/2026
 class ClientCandidateJoiningHistorySerializer(serializers.ModelSerializer):
+    candidate_details = serializers.SerializerMethodField(read_only=True)
+    requirement_details = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = ClientCandidateJoiningHistory
         fields = "__all__"
+
+    def get_candidate_details(self, obj):
+        if obj.candidate:
+            return CandidateApplicationSerializer(obj.candidate).data
+        return None
+
+    def get_requirement_details(self, obj):
+        if obj.requirement:
+            return Requirementserializer(obj.requirement).data
+        return None
 
 class ClientInvoiceSerializer(serializers.ModelSerializer):
     joining_data=serializers.SerializerMethodField(read_only=True)
@@ -434,7 +450,7 @@ class IRS(serializers.ModelSerializer):
         representation= super().to_representation(instance)
         representation['Candidate_Id'] = instance.CandidateId.CandidateId
         can_fullname= f'{instance.CandidateId.FirstName} {instance.CandidateId.LastName}' if instance.CandidateId.LastName else instance.CandidateId.FirstName
-        representation['CandidateName'] = can_fullname.title()
+        representation['CandidateName'] = can_fullname.title() if can_fullname else None
         return representation 
     
         
@@ -800,6 +816,46 @@ class NewDailyAchivesModelSerializer(serializers.ModelSerializer):
         model = NewDailyAchivesModel
         fields = "__all__"
 
+    #5/6/26
+    def validate(self, attrs):
+        # Enforce remarks validation for manual edits and recruiter operations
+        sourcing_channel = attrs.get('sourcing_channel', self.instance.sourcing_channel if self.instance else 'direct')
+        
+        # Bypass validation for bulk upload or direct candidate submissions
+        is_recruiter_action = sourcing_channel not in ['bulk_upload', 'direct']
+        
+        if is_recruiter_action:
+            # Determine the activity type (interview, client, or job post) to check the corresponding remarks field
+            current_day_activity = attrs.get('current_day_activity', self.instance.current_day_activity if self.instance else None)
+            activity_name = None
+            if current_day_activity:
+                try:
+                    if current_day_activity.Activity_instance and current_day_activity.Activity_instance.Activity:
+                        activity_name = current_day_activity.Activity_instance.Activity.activity_name
+                except AttributeError:
+                    pass
+            
+            # Check remarks according to the activity type
+            if activity_name == 'interview_calls':
+                remarks = attrs.get('interview_call_remarks', self.instance.interview_call_remarks if self.instance else '')
+                if not remarks or not str(remarks).strip():
+                    raise serializers.ValidationError({
+                        "interview_call_remarks": "Remarks/comments are mandatory for interview call logs."
+                    })
+            elif activity_name == 'client_calls':
+                remarks = attrs.get('client_call_remarks', self.instance.client_call_remarks if self.instance else '')
+                if not remarks or not str(remarks).strip():
+                    raise serializers.ValidationError({
+                        "client_call_remarks": "Remarks/comments are mandatory for client call logs."
+                    })
+            elif activity_name == 'job_posts':
+                remarks = attrs.get('job_post_remarks', self.instance.job_post_remarks if self.instance else '')
+                if not remarks or not str(remarks).strip():
+                    raise serializers.ValidationError({
+                        "job_post_remarks": "Remarks/comments are mandatory for job post logs."
+                    })
+        return attrs
+
     def to_representation(self, instance):
         representation = super().to_representation(instance)
         activity_name = "-"
@@ -809,6 +865,67 @@ class NewDailyAchivesModelSerializer(serializers.ModelSerializer):
         except AttributeError:
             pass
         representation['Activity_instance'] = activity_name
+        
+        #17/4/2026
+        # Add requirement data for display
+        if instance.assigned_requirement:
+            req_data = AssignedRequirementSerializer(instance.assigned_requirement).data
+            representation['requirement_data'] = req_data
+            # Flattened name for easier frontend table display
+            client = req_data.get('requirement_data', {}).get('client_details', {}).get('client_name', 'N/A')
+            job = req_data.get('requirement_data', {}).get('job_title', 'N/A')
+            representation['requirement_name'] = f"{client} - {job}"
+        else:
+            representation['requirement_data'] = None
+            representation['requirement_name'] = None
+
+        # Fetch assignment details
+        handled_by_name = "Unknown"
+        handled_by_id = None
+        assigned_by_name = "System"
+        assigned_by_id = None
+        try:
+            if instance.current_day_activity and instance.current_day_activity.Activity_instance:
+                recruiter = instance.current_day_activity.Activity_instance.Employee
+                if recruiter:
+                    handled_by_name = recruiter.Name
+                    handled_by_id = recruiter.EmployeeId
+                
+                assigner = instance.current_day_activity.Activity_instance.activity_assigned_by
+                if assigner:
+                    assigned_by_name = assigner.Name
+                    assigned_by_id = assigner.EmployeeId
+        except Exception:
+            pass
+
+        # Fetch latest pending follow-up details
+        try:
+            latest_pending_followup = FollowUpModel.objects.filter(
+                activity_record=instance,
+                status='pending'
+            ).order_by('-expected_date', '-expected_time').first()
+            
+            if latest_pending_followup:
+                representation['next_followup_date'] = latest_pending_followup.expected_date.strftime('%Y-%m-%d')
+                representation['next_followup_time'] = latest_pending_followup.expected_time.strftime('%H:%M')
+                representation['next_followup_notes'] = latest_pending_followup.notes
+                representation['next_followup_id'] = latest_pending_followup.id
+            else:
+                representation['next_followup_date'] = None
+                representation['next_followup_time'] = None
+                representation['next_followup_notes'] = None
+                representation['next_followup_id'] = None
+        except Exception:
+            representation['next_followup_date'] = None
+            representation['next_followup_time'] = None
+            representation['next_followup_notes'] = None
+            representation['next_followup_id'] = None
+
+        representation['handled_by'] = handled_by_name
+        representation['handled_by_id'] = handled_by_id
+        representation['assigned_by'] = assigned_by_name
+        representation['assigned_by_id'] = assigned_by_id
+            
         return representation
     
 #28-01-2026
@@ -837,6 +954,43 @@ class FollowUpSerializer(serializers.ModelSerializer):
         if obj.activity_record:
             return obj.activity_record.candidate_phone or obj.activity_record.client_phone
         return None
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        activity = instance.activity_record
+        if activity:
+            #6/6/26
+            if activity.url and activity.url.startswith("candidate:"):
+                cand_id = activity.url.split(":")[-1]
+                representation['display_id'] = f"c_{cand_id}"
+            else:
+                representation['display_id'] = activity.id
+            representation['candidate_name'] = activity.candidate_name or activity.client_name or "N/A"
+            representation['candidate_phone'] = activity.candidate_phone or activity.client_phone or "N/A"
+            representation['candidate_email'] = activity.candidate_email or activity.client_email or "—"
+            representation['candidate_designation'] = activity.candidate_designation or activity.position or "N/A"
+            representation['source'] = activity.source or "N/A"
+            representation['Created_Date'] = activity.Created_Date.isoformat() if activity.Created_Date else None
+            representation['interview_status'] = activity.interview_status
+            representation['interview_call_remarks'] = activity.interview_call_remarks
+            
+            # Fetch assignment details
+            handled_by_name = "Unknown"
+            assigned_by_name = "System"
+            try:
+                if activity.current_day_activity and activity.current_day_activity.Activity_instance:
+                    recruiter = activity.current_day_activity.Activity_instance.Employee
+                    if recruiter:
+                        handled_by_name = recruiter.Name
+                    
+                    assigner = activity.current_day_activity.Activity_instance.activity_assigned_by
+                    if assigner:
+                        assigned_by_name = assigner.Name
+            except Exception:
+                pass
+            representation['handled_by'] = handled_by_name
+            representation['assigned_by'] = assigned_by_name
+        return representation
 
 
 class ClientServicesSerializer(serializers.ModelSerializer):

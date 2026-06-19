@@ -20,6 +20,15 @@ urlpatterns = [
 
     path('client-joining/', ClientCandidateJoiningHistoryView.as_view(), name='client-joining-create'),
     path('client-joining/<int:pk>/', ClientCandidateJoiningHistoryView.as_view(), name='client-joining-update'),
-    path("client-requirement-invoice-generate",ClientRequirementInvoiceGenerationView.as_view())
+    path("client-requirement-invoice-generate",ClientRequirementInvoiceGenerationView.as_view()),
+
+    #18/03/2026
+    # Phase 2: Billing URLs
+    # List all billing cycles / Create a new billing cycle
+    path("billing-cycles/", ClientBillingCycleView.as_view(), name="billing-cycles"),
+    # Record a payment for a specific billing cycle (PATCH with cycle PK)
+    path("billing-payment/<int:pk>/", ClientBillingPaymentView.as_view(), name="billing-payment"),
+    # Client-level billing dashboard summary
+    path("billing-summary/", ClientBillingCycleSummaryView.as_view(), name="billing-summary"),
 
 ]+ static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

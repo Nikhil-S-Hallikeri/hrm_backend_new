@@ -92,6 +92,7 @@ from .serializer import *
 from HRM_App.models import *
 from HRM_App.serializers import *
 from django.db.models import Q
+from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.db.models import Count,Sum
 
@@ -286,7 +287,8 @@ class RequirementsView(APIView):
             if not req_obj:
                 return Response("requirements id not exist",status=status.HTTP_400_BAD_REQUEST)
         
-            serializer=Requirementserializer(req_obj,data=request.data)
+            #18/03/2026
+            serializer=Requirementserializer(req_obj,data=request.data,partial=True)
 
             if serializer.is_valid():
                 serializer.save()
@@ -319,16 +321,15 @@ class ClientRequirementAssignView(APIView):
             serializer=ClientRequirementAssignSerializer(req_objs,many=True,context={"request":request})
             return Response(serializer.data,status=status.HTTP_200_OK)
         elif requirement:
-            req_objs=RequirementAssign.objects.filter(requirement__pk=requirement)
+            req_objs = RequirementAssign.objects.filter(requirement__pk=requirement)
             if not req_objs.exists():
-                return Response([],status=status.HTTP_200_OK)
-            requirement_assigned_list=[]
-            for assign in req_objs:
-                serializer=ClientRequirementAssignSerializer(assign,context={"request":request}).data
-                interview_obj=InterviewSchedulModel.objects.filter(assigned_requirement=assign).count()
-                serializer["candidate_assigned"]=interview_obj
-                requirement_assigned_list.append(serializer)
-            return Response(requirement_assigned_list,status=status.HTTP_200_OK)
+                return Response([], status=status.HTTP_200_OK)
+            
+            serializer = ClientRequirementAssignSerializer(req_objs, many=True, context={"request": request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+            
+            # serializer=ClientRequirementAssignSerializer(req_objs,many=True,context={"request":request})
+            # return Response(serializer.data,status=status.HTTP_200_OK)
             
             # serializer=ClientRequirementAssignSerializer(req_objs,many=True,context={"request":request})
             # return Response(serializer.data,status=status.HTTP_200_OK)
@@ -404,7 +405,7 @@ class ClientInverviewsAssignedCandidatesList(APIView):
                     
             
                 if not interview_obj.exists():
-                    return Response("no interviews found",status=status.HTTP_400_BAD_REQUEST)
+                    return Response([],status=status.HTTP_200_OK)
                 # Exclude candidates who exist in HRFinalStatusModel
 
                 excluded_candidates = HRFinalStatusModel.objects.values_list('CandidateId', 'req_id')
@@ -772,40 +773,106 @@ class AssignedRequirementsInterviews(APIView):
             return Response(str(e),status=status.HTTP_400_BAD_REQUEST)
             
         
-
+# 18/03/2026
 class ClientCandidateJoiningHistoryView(APIView):
     def get(self, request):
+        client_id = request.GET.get("client_id")
         interview_id = request.GET.get("interview_id")
-        
-        # Check if interview_id is provided
-        if not interview_id:
-            return Response({"error": "interview_id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Get the InterviewSchedulModel object
-        interview_obj = InterviewSchedulModel.objects.filter(pk=interview_id).first()
-        if not interview_obj:
-            return Response({"error": "Interview not found."}, status=status.HTTP_404_NOT_FOUND)
+        # 18/03/2026
+        # Filter by interview_id if provided
+        if interview_id:
+            interview_obj = InterviewSchedulModel.objects.filter(pk=interview_id).first()
+            if not interview_obj:
+                return Response({"error": "Interview not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Serialize the interview object
-        interview_serializer = ClientInterviewSchedulSerializer(interview_obj).data
+            interview_serializer = ClientInterviewSchedulSerializer(interview_obj).data
+            final_results = HRFinalStatusModel.objects.filter(
+                req_id=interview_obj.assigned_requirement.requirement,
+                CandidateId=interview_obj.Candidate
+            )
+            final_status_serializer = HRInterviewReviewSerializer(final_results, many=True).data
+            interview_serializer["FinalStatusList"] = final_status_serializer
 
-        # Get final status results for the interview
-        final_results = HRFinalStatusModel.objects.filter(
-            req_id=interview_obj.assigned_requirement.requirement,
-            CandidateId=interview_obj.Candidate
-        )
-        # Serialize the final status results
-        final_status_serializer = HRInterviewReviewSerializer(final_results, many=True).data
-        interview_serializer["FinalStatusList"] = final_status_serializer
+            joining_history_obj = ClientCandidateJoiningHistory.objects.filter(client_interview=interview_obj)
+            joining_history_serializer = ClientCandidateJoiningHistorySerializer(joining_history_obj, many=True).data 
+            interview_serializer["Joining_History"] = joining_history_serializer
 
-        # Get the joining history associated with the interview
-        joining_history_obj = ClientCandidateJoiningHistory.objects.filter(client_interview=interview_obj)
-        
-        joining_history_serializer = ClientCandidateJoiningHistorySerializer(joining_history_obj,many=True).data 
-           
-        interview_serializer["Joining_History"] = joining_history_serializer
+            return Response(interview_serializer, status=status.HTTP_200_OK)
 
-        return Response(interview_serializer, status=status.HTTP_200_OK)
+        # Filter by client_id if provided
+        elif client_id:
+            all_joinings = ClientCandidateJoiningHistory.objects.filter(requirement__client__pk=client_id)
+            
+            # --- Phase 2: Add Potential Placements ---
+            # These are candidates assigned to client requirements who haven't "joined" formally yet.
+            existing_interview_ids = all_joinings.values_list('client_interview_id', flat=True)
+            
+            potential_interviews = InterviewSchedulModel.objects.filter(
+                assigned_requirement__requirement__client__pk=client_id,
+                for_whome='client'
+            ).exclude(id__in=existing_interview_ids)
+            
+            # Convert joinings to list of data
+            serializer = ClientCandidateJoiningHistorySerializer(all_joinings, many=True)
+            data = serializer.data
+            
+            # Add virtual entries for potential interviews
+            for interview in potential_interviews:
+                data.append({
+                    "id": f"virtual_int_{interview.id}",
+                    "candidate_details": {
+                        "FirstName": interview.Candidate.FirstName,
+                        "LastName": interview.Candidate.LastName,
+                        "Email": interview.Candidate.Email
+                    },
+                    "requirement_details": {
+                        "job_title": interview.assigned_requirement.requirement.job_title if interview.assigned_requirement and interview.assigned_requirement.requirement else "N/A",
+                        "id": interview.assigned_requirement.requirement.id if interview.assigned_requirement and interview.assigned_requirement.requirement else None,
+                        "billing_amount": interview.assigned_requirement.requirement.billing_amount if interview.assigned_requirement and interview.assigned_requirement.requirement else 0
+                    },
+                    "joining_date": interview.DOJ if hasattr(interview, 'DOJ') else None,
+                    "CTC": interview.assigned_requirement.requirement.billing_amount if interview.assigned_requirement and interview.assigned_requirement.requirement else 0,
+                    "is_potential": True,
+                    "source": "interview"
+                })
+
+            # --- Phase 3: Add Potential Placements from HRFinalStatusModel ---
+            # These are candidates who were offered or joined via FinalStatusUpdate but might not have Interviews or Joining History.
+            existing_candidate_ids = all_joinings.values_list('candidate_id', flat=True)
+            existing_interview_candidate_ids = potential_interviews.values_list('Candidate_id', flat=True)
+            
+            potential_hrfs = HRFinalStatusModel.objects.filter(
+                req_id__client__pk=client_id,
+                Final_Result__in=['client_offered', 'candidate_joined', 'offered']
+            ).exclude(CandidateId_id__in=existing_candidate_ids).exclude(CandidateId_id__in=existing_interview_candidate_ids)
+
+            for hrfs in potential_hrfs:
+                data.append({
+                    "id": f"virtual_hrfs_{hrfs.id}",
+                    "candidate_details": {
+                        "FirstName": hrfs.CandidateId.FirstName,
+                        "LastName": hrfs.CandidateId.LastName,
+                        "Email": hrfs.CandidateId.Email
+                    },
+                    "requirement_details": {
+                        "job_title": hrfs.req_id.job_title if hrfs.req_id else "N/A",
+                        "id": hrfs.req_id.id if hrfs.req_id else None,
+                        "billing_amount": hrfs.req_id.billing_amount if hrfs.req_id else 0
+                    },
+                    "joining_date": timezone.localdate(),
+                    "CTC": hrfs.req_id.billing_amount if hrfs.req_id else 0,
+                    "is_potential": True,
+                    "source": "hrfs"
+                })
+            
+            print(f"DEBUG: Returning {len(data)} total placements (including potential) for client {client_id}")
+            return Response(data, status=status.HTTP_200_OK)
+
+        # Default: return all joining history records
+        all_joinings = ClientCandidateJoiningHistory.objects.all()
+        serializer = ClientCandidateJoiningHistorySerializer(all_joinings, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
         """Create a new ClientCandidateJoiningHistory record."""
@@ -874,4 +941,396 @@ class ClientRequirementInvoiceGenerationView(APIView):
 
 
 
+#18/03/2026
+# Phase 2: Client Billing Views
 
+class ClientBillingCycleView(APIView):
+    """
+    Handles billing cycles for client placements.
+
+    GET:
+        - ?joining_id=<id>  → List all billing cycles for a specific joining record.
+        - ?client_id=<id>   → List all billing cycles across all placements for a client.
+        - ?requirement_id=<id> → List all billing cycles for a requirement.
+
+    POST:
+        Create a new billing cycle entry for a joining record.
+        Required body: { joining_details, cycle_month, billing_amount, due_date }
+    """
+    def get(self, request):
+        try:
+            joining_id = request.GET.get("joining_id")
+            client_id = request.GET.get("client_id")
+            requirement_id = request.GET.get("requirement_id")
+
+            # --- Auto-mark overdue: flip PENDING/PARTIAL cycles past their due date to OVERDUE ---
+            today = timezone.localdate()
+            ClientBillingCycle.objects.filter(
+                status__in=["pending", "partial"],
+                due_date__lt=today
+            ).update(status="overdue")
+            # ---------------------------------------------------------------------------------
+
+            if joining_id:
+                # Virtual placements (e.g. 'virtual_hrfs_123') have no real joining record yet.
+                # They can't have any existing billing cycles, so return empty list safely.
+                if isinstance(joining_id, str) and joining_id.startswith("virtual_"):
+                    return Response([], status=status.HTTP_200_OK)
+                cycles = ClientBillingCycle.objects.filter(joining_details__pk=joining_id)
+                serializer = ClientBillingCycleSerializer(cycles, many=True)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+
+            elif client_id:
+                cycles = ClientBillingCycle.objects.filter(
+                    joining_details__requirement__client__pk=client_id
+                ).order_by("-created_on")
+                serializer = ClientBillingCycleSerializer(cycles, many=True)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+
+            elif requirement_id:
+                cycles = ClientBillingCycle.objects.filter(
+                    joining_details__requirement__pk=requirement_id
+                ).order_by("-created_on")
+                serializer = ClientBillingCycleSerializer(cycles, many=True)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+
+            else:
+                return Response(
+                    {"error": "Provide joining_id, client_id, or requirement_id as query param."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        except Exception as e:
+            print(e)
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+    def post(self, request):
+        """
+        Create a new billing cycle manually.
+        This is used when HR wants to create the first monthly invoice
+        after a candidate joins.
+        Body: { joining_details, cycle_month, billing_amount, due_date, [remarks] }
+        """
+        try:
+            # serializer = ClientBillingCycleSerializer(data=request.data)
+            # --- Phase 2: Handle Virtual Joinings ---
+            # If the joining_details is a string ID from a virtual placement, 
+            # we create the formal joining record on the fly.
+            data = request.data.copy()
+            joining_id_val = data.get("joining_details")
+            
+            if isinstance(joining_id_val, str) and joining_id_val.startswith("virtual_"):
+                if joining_id_val.startswith("virtual_int_") or (not joining_id_val.startswith("virtual_hrfs_") and joining_id_val.startswith("virtual_")):
+                    # Support both old "virtual_" and new "virtual_int_" prefixes
+                    str_id = joining_id_val.replace("virtual_int_", "").replace("virtual_", "")
+                    interview_id = int(str_id)
+                    interview_obj = InterviewSchedulModel.objects.get(pk=interview_id)
+                    
+                    # Check if it was already created (concurrency safeguard)
+                    joining_obj = ClientCandidateJoiningHistory.objects.filter(client_interview=interview_obj).first()
+                    if not joining_obj:
+                        # Find the requirement from the assigned_requirement model safely
+                        requirement_obj = None
+                        if interview_obj.assigned_requirement and hasattr(interview_obj.assigned_requirement, 'requirement'):
+                            requirement_obj = interview_obj.assigned_requirement.requirement
+
+                        joining_obj = ClientCandidateJoiningHistory.objects.create(
+                            client_interview=interview_obj,
+                            candidate=interview_obj.Candidate,
+                            requirement=requirement_obj,
+                            joining_date=interview_obj.DOJ if hasattr(interview_obj, 'DOJ') and interview_obj.DOJ else timezone.localdate(),
+                            is_joined=True,
+                            is_active=True,
+                            CTC=requirement_obj.billing_amount if requirement_obj else 0,
+                            remarks="Auto-joined from virtual interview during billing cycle creation"
+                        )
+                
+                elif joining_id_val.startswith("virtual_hrfs_"):
+                    hrfs_id = int(joining_id_val.replace("virtual_hrfs_", ""))
+                    hrfs_obj = HRFinalStatusModel.objects.get(pk=hrfs_id)
+                    
+                    # Check if it was already created
+                    joining_obj = ClientCandidateJoiningHistory.objects.filter(
+                        candidate=hrfs_obj.CandidateId,
+                        requirement=hrfs_obj.req_id
+                    ).first()
+                    
+                    if not joining_obj:
+                        joining_obj = ClientCandidateJoiningHistory.objects.create(
+                            candidate=hrfs_obj.CandidateId,
+                            requirement=hrfs_obj.req_id,
+                            joining_date=timezone.localdate(),
+                            is_joined=True,
+                            is_active=True,
+                            CTC=0,
+                            remarks="Auto-joined from virtual HRFinalStatus during billing cycle creation"
+                        )
+                
+                data["joining_details"] = joining_obj.id
+
+            is_contract_basis = str(data.get("is_contract_basis", "false")).lower() in ["true", "1", "yes"]
+            if is_contract_basis:
+                real_joining_id = data.get("joining_details")
+                joining_instance = ClientCandidateJoiningHistory.objects.filter(pk=real_joining_id).first()
+                if joining_instance:
+                    joining_instance.is_contract_basis = True
+                    candidate_payout = data.get("candidate_payout_amount")
+                    if candidate_payout not in [None, '', 0, '0']:
+                        joining_instance.candidate_salary = candidate_payout
+                    joining_instance.save()
+
+            # Prevent duplicate cycle for same joining + month before serializer validation
+            check_joining_id = data.get("joining_details")
+            check_cycle_month = data.get("cycle_month")
+            if ClientBillingCycle.objects.filter(joining_details__pk=check_joining_id, cycle_month=check_cycle_month).exists():
+                return Response(
+                    {"error": f"Billing cycle {check_cycle_month} already exists for this placement. Please use a different month number."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            serializer = ClientBillingCycleSerializer(data=data)
+            if serializer.is_valid():
+                #1/04/2026
+                # --- Phase 2: Copy Candidate Salary for Contract Placements ---
+                try:
+                    joining_id = data.get("joining_details")
+                    joining_obj = ClientCandidateJoiningHistory.objects.filter(pk=joining_id).first()
+                    if joining_obj and joining_obj.is_contract_basis:
+                        passed_payout = data.get("candidate_payout_amount")
+                        if passed_payout not in [None, '', 0, '0']:
+                            serializer.validated_data["candidate_payout_amount"] = passed_payout
+                        else:
+                            serializer.validated_data["candidate_payout_amount"] = joining_obj.candidate_salary
+                except Exception as e:
+                    print(f"Error copying candidate salary: {e}")
+                # -----------------------------------------------------------
+
+                try:
+                    instance = serializer.save()
+                    return Response(serializer.data, status=status.HTTP_201_CREATED)
+                except Exception as e:
+                    # Final concurrency safeguard: if it was created in the last few ms by another request
+                    existing = ClientBillingCycle.objects.filter(
+                        joining_details__pk=data.get("joining_details"),
+                        cycle_month=data.get("cycle_month")
+                    ).first()
+                    if existing:
+                        return Response(ClientBillingCycleSerializer(existing).data, status=status.HTTP_201_CREATED)
+                    return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                print(serializer.errors)
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            print(e)
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ClientBillingPaymentView(APIView):
+    """
+    Records a payment for a specific billing cycle.
+
+    PATCH  /root/cms/billing-payment/<int:pk>/
+        Body: { payment_date, payment_reference, [remarks] }
+        Marks the billing cycle as 'paid'.
+    """
+    def patch(self, request, pk):
+        try:
+            cycle_obj = ClientBillingCycle.objects.filter(pk=pk).first()
+            if not cycle_obj:
+                return Response({"error": "Billing cycle not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            # if cycle_obj.status == "paid":
+            #     return Response({"error": "This cycle is already fully paid."}, status=status.HTTP_400_BAD_REQUEST)
+
+            payment_type = request.data.get("payment_type", "client") # 'client' or 'candidate'
+            payment_amount = request.data.get("payment_amount")
+
+            if payment_amount is None:
+                return Response({"error": "payment_amount is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                payment_amount = float(payment_amount)
+            except (ValueError, TypeError):
+                return Response({"error": "payment_amount must be a valid number."}, status=status.HTTP_400_BAD_REQUEST)
+
+            if payment_amount <= 0:
+                return Response({"error": "payment_amount must be greater than 0."}, status=status.HTTP_400_BAD_REQUEST)
+
+            if payment_type == "candidate":
+                # --- Phase 2: Record Candidate Payout (Money OUT) ---
+                if cycle_obj.payout_status == "paid":
+                    return Response({"error": "Candidate salary for this cycle is already fully paid."}, status=status.HTTP_400_BAD_REQUEST)
+                
+                new_payout_total = float(cycle_obj.candidate_paid_amount) + payment_amount
+                max_payout = float(cycle_obj.candidate_payout_amount)
+
+                if new_payout_total >= max_payout:
+                    new_payout_total = max_payout
+                    new_payout_status = "paid"
+                else:
+                    new_payout_status = "partial"
+
+                cycle_obj.candidate_paid_amount = new_payout_total
+                cycle_obj.payout_status = new_payout_status
+                cycle_obj.payout_date = request.data.get("payment_date", timezone.localdate())
+                cycle_obj.payout_reference = request.data.get("payment_reference", cycle_obj.payout_reference)
+            
+            else:
+                # --- Standard Client Payment (Money IN) ---
+                if cycle_obj.status == "paid":
+                    return Response({"error": "This cycle is already fully paid by the client."}, status=status.HTTP_400_BAD_REQUEST)
+
+                new_paid_total = float(cycle_obj.paid_amount) + payment_amount
+                billing_amount = float(cycle_obj.billing_amount)
+
+                if new_paid_total >= billing_amount:
+                    new_paid_total = billing_amount
+                    new_status = "paid"
+                else:
+                    new_status = "partial"
+
+                cycle_obj.paid_amount = new_paid_total
+                cycle_obj.status = new_status
+                cycle_obj.payment_date = request.data.get("payment_date", cycle_obj.payment_date)
+                cycle_obj.payment_reference = request.data.get("payment_reference", cycle_obj.payment_reference)
+
+            if request.data.get("remarks"):
+                cycle_obj.remarks = request.data.get("remarks")
+            
+            cycle_obj.save()
+
+            serializer = ClientBillingCycleSerializer(cycle_obj)
+            # response_data = serializer.data
+            # response_data["balance_amount"] = billing_amount - new_paid_total
+            # return Response(response_data, status=status.HTTP_200_OK)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            print(e)
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
+class ClientBillingCycleSummaryView(APIView):
+    """
+    Returns a summary dashboard of billing for a specific client.
+
+    GET ?client_id=<id>
+    Returns:
+        - total_billed:  Sum of all billing amounts across all cycles.
+        - total_paid:    Sum of paid billing amounts.
+        - total_pending: Sum of pending billing amounts.
+        - cycle_counts: { pending, paid, overdue, cancelled }
+        - active_placements: Count of active joined candidates under this client.
+    """
+    def get(self, request):
+        try:
+            client_id = request.GET.get("client_id")
+            if not client_id:
+                return Response({"error": "client_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+            # --- Self-Healing Mechanism (Phase 3) ---
+            # Fix any orphaned joining records that belong to this client but are missing the requirement link.
+            orphaned_joinings = ClientCandidateJoiningHistory.objects.filter(
+                requirement=None,
+                client_interview__assigned_requirement__requirement__client__pk=client_id
+            )
+            for joining in orphaned_joinings:
+                joining.requirement = joining.client_interview.assigned_requirement.requirement
+                joining.save()
+            # ----------------------------------------
+
+            cycles = ClientBillingCycle.objects.filter(
+                joining_details__requirement__client__pk=client_id
+            )
+
+            total_billed = cycles.aggregate(total=Sum("billing_amount"))["total"] or 0
+
+            # --- Auto-mark overdue before calculating summary ---
+            today = timezone.localdate()
+            ClientBillingCycle.objects.filter(
+                joining_details__requirement__client__pk=client_id,
+                status__in=["pending", "partial"],
+                due_date__lt=today
+            ).update(status="overdue")
+            # Re-query after update
+            cycles = ClientBillingCycle.objects.filter(
+                joining_details__requirement__client__pk=client_id
+            )
+            # -------------------------------------------------------
+
+            # Fully paid cycles → count their full billing_amount
+            sum_billed_paid = cycles.filter(status="paid").aggregate(total=Sum("billing_amount"))["total"]
+            fully_paid = sum_billed_paid if sum_billed_paid is not None else 0
+            
+            # Partial cycles → count only what's been paid so far (paid_amount)
+            sum_partial_paid = cycles.filter(status="partial").aggregate(total=Sum("paid_amount"))["total"]
+            partially_paid = sum_partial_paid if sum_partial_paid is not None else 0
+            total_paid = fully_paid + partially_paid
+
+            # Pending cycles → full billing_amount is still pending
+            sum_pending = cycles.filter(status="pending").aggregate(total=Sum("billing_amount"))["total"]
+            pending_full = sum_pending if sum_pending is not None else 0
+            
+            # Partial cycles → only the remaining balance is pending
+            partial_queryset = cycles.filter(status="partial")
+            if partial_queryset.exists():
+                partial_agg = partial_queryset.aggregate(
+                    total_billed=Sum("billing_amount"),
+                    total_paid=Sum("paid_amount")
+                )
+                partial_balance = (partial_agg["total_billed"] or 0) - (partial_agg["total_paid"] or 0)
+            else:
+                partial_balance = 0
+            total_pending = pending_full + partial_balance
+
+            # Overdue: remaining balance on overdue cycles
+            overdue_queryset = cycles.filter(status="overdue")
+            if overdue_queryset.exists():
+                overdue_agg = overdue_queryset.aggregate(
+                    total_billed=Sum("billing_amount"),
+                    total_paid=Sum("paid_amount")
+                )
+                total_overdue = (overdue_agg["total_billed"] or 0) - (overdue_agg["total_paid"] or 0)
+            else:
+                total_overdue = 0
+
+            # --- Phase 2: Candidate Payout & Profit Aggregations ---
+            sum_payout = cycles.aggregate(total=Sum("candidate_payout_amount"))["total"]
+            total_payout = sum_payout if sum_payout is not None else 0
+            
+            sum_paid_out = cycles.aggregate(total=Sum("candidate_paid_amount"))["total"]
+            total_payout_paid = sum_paid_out if sum_paid_out is not None else 0
+            
+            total_profit = total_billed - total_payout
+            # --------------------------------------------------------
+
+            cycle_counts = {
+                "pending": cycles.filter(status="pending").count(),
+                "paid": cycles.filter(status="paid").count(),
+                "overdue": cycles.filter(status="overdue").count(),
+                "cancelled": cycles.filter(status="cancelled").count(),
+            }
+
+            active_placements = ClientCandidateJoiningHistory.objects.filter(
+                requirement__client__pk=client_id,
+                is_active=True,
+                is_joined=True
+            ).count()
+
+            return Response({
+                "total_billed": total_billed,
+                "total_paid": total_paid,
+                "total_pending": total_pending,
+                "total_overdue": total_overdue,
+                "total_payout": total_payout,
+                "total_payout_paid": total_payout_paid,
+                "total_profit": total_profit,
+                "cycle_counts": cycle_counts,
+                "active_placements": active_placements
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            print(e)
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

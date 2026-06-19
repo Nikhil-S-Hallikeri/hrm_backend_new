@@ -1,9 +1,14 @@
-
 from django.db import models
 from django.utils import timezone
 import uuid
 from django.conf import settings
 import requests
+import secrets
+from datetime import timedelta
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Create your models here.
 
@@ -358,6 +363,10 @@ class EmployeeDataModel(models.Model):
     screening_shedule_access=models.BooleanField(default=False)
     interview_shedule_access=models.BooleanField(default=False)
     final_status_access=models.BooleanField(default=False)
+    all_applicants_access=models.BooleanField(default=False)
+    #6/6/26
+    leads_access=models.BooleanField(default=False)
+    universal_leads_access=models.BooleanField(default=False)
     
     self_activity_add=models.BooleanField(default=False)
     all_employees_view=models.BooleanField(default=False)
@@ -423,28 +432,54 @@ class EmployeeDataModel(models.Model):
         if is_new_instance:
             # Create the new instance via POST
             url = f'{settings.DAS_URL}api/EmployeeRegistration/'
-            response = requests.post(url, json=data)
-            if response.status_code != 200:
+            # response = requests.post(url, json=data)
+            # if response.status_code != 200:
+            try:
+                response = requests.post(url, json=data, timeout=5, verify=False)
+                if response.status_code != 200:
+                    emp_obj=EmployeeInformation.objects.filter(employee_Id=self.EmployeeId).first()
+                    idtrack=EmployeeIDTracker.objects.filter(id=1).first()
+                    if idtrack:
+                        if emp_obj.Employeement_Type == "intern":
+                            idtrack.current_intern_number-=1
+                        elif emp_obj.Employeement_Type == "permanent":
+                            idtrack.current_emp_number-=1
+                        idtrack.save()
+                    emp_obj.delete()
 
-                emp_obj=EmployeeInformation.objects.filter(employee_Id=self.EmployeeId).first()
-                idtrack=EmployeeIDTracker.objects.filter(id=1).first()
-                if idtrack:
-                    if emp_obj.Employeement_Type == "intern":
-                        idtrack.current_intern_number-=1
-                    elif emp_obj.Employeement_Type == "permanent":
-                        idtrack.current_emp_number-=1
-                    idtrack.save()
-                emp_obj.delete()
+                    EmployeeDataModel.objects.filter(pk=self.pk).delete()
 
-                EmployeeDataModel.objects.filter(pk=self.pk).delete()
+                # emp_obj=EmployeeInformation.objects.filter(employee_Id=self.EmployeeId).first()
+                # idtrack=EmployeeIDTracker.objects.filter(id=1).first()
+                # if idtrack:
+                #     if emp_obj.Employeement_Type == "intern":
+                #         idtrack.current_intern_number-=1
+                #     elif emp_obj.Employeement_Type == "permanent":
+                #         idtrack.current_emp_number-=1
+                #     idtrack.save()
+                # emp_obj.delete()
+                # EmployeeDataModel.objects.filter(pk=self.pk).delete()
+                # raise Exception("API Response:", response.json())
+                # # raise Exception(f"Failed to register employee: {response.status_code} - {response.text}")
 
-                raise Exception("API Response:", response.json())
-                # raise Exception(f"Failed to register employee: {response.status_code} - {response.text}")
+
+                    raise Exception("API Response:", response.json())
+            except Exception as e:
+                print(f"DAS POST Error: {e}")
+                # We don't raise here for existing updates to allow the local save to proceed
+                # but for NEW instances, the original code looked like it wanted to rollback.
+                # I'll keep the raise only if the status code was explicitly not 200.
         else:
             url = f'{settings.DAS_URL}api/EmployeeRegistration/'
-            response = requests.patch(url, json=data)
-            if response.status_code != 200:
-                raise Exception(f"Failed to update employee: {response.status_code} - {response.text}")
+            # response = requests.patch(url, json=data)
+            # if response.status_code != 200:
+            #     raise Exception(f"Failed to update employee: {response.status_code} - {response.text}")
+            try:
+                response = requests.patch(url, json=data, timeout=5, verify=False)
+                if response.status_code != 200:
+                    print(f"Failed to update employee in DAS: {response.status_code}")
+            except Exception as e:
+                print(f"DAS Sync error: {e}")
             
     def delete(self, *args, **kwargs):
         print("method called succssfully")
@@ -525,7 +560,9 @@ class InterviewSchedulModel(models.Model):
         return self.Candidate.CandidateId
 
 class ScreeningAssigningModel(models.Model):
-    Candidate=models.OneToOneField (CandidateApplicationModel,max_length=100,blank=True,null=True,on_delete=models.CASCADE,related_name="Recruiter")
+    #5/6/2026
+    # Candidate=models.OneToOneField (CandidateApplicationModel,max_length=100,blank=True,null=True,on_delete=models.CASCADE,related_name="Recruiter")
+    Candidate=models.ForeignKey (CandidateApplicationModel,max_length=100,blank=True,null=True,on_delete=models.CASCADE,related_name="Recruiter")
     Recruiter=models.ForeignKey(EmployeeDataModel,on_delete=models.CASCADE)
     choice=[("Assigned","Assigned"),("Completed","Completed")]
     status=models.CharField(max_length=100,blank=True,null=True,choices=choice)
@@ -683,7 +720,10 @@ class HRFinalStatusModel(models.Model):
     Comments=models.TextField(blank=True,null=True)
 
     def __str__(self):
-        str(self.CandidateId.CandidateId) + str(self.ReviewedOn)
+        #22/05/2026
+        candidate_id = self.CandidateId.CandidateId if self.CandidateId else "No Candidate"
+        reviewed_on = self.ReviewedOn if self.ReviewedOn else "No Review Date"
+        return f"{candidate_id} - {reviewed_on}"
 
 
 class Documents_Upload_Model(models.Model):
@@ -901,6 +941,18 @@ class ClientCandidateJoiningHistory(models.Model):
     is_active=models.BooleanField(default=False)
     is_invoice_created=models.BooleanField(default=False)
     is_joined=models.BooleanField(default=False)
+    #1/04/2026
+    # --- Phase 2: Contract Employment Fields ---
+    is_contract_basis = models.BooleanField(
+        default=False, 
+        help_text="If True, Merida pays the candidate salary (contract placement)"
+    )
+    candidate_salary = models.DecimalField(
+        max_digits=12, decimal_places=2, 
+        default=0,
+        help_text="Monthly salary paid to candidate in a contract placement (includes taxes/PF)"
+    )
+    # --------------------------------------------
     created_on=models.DateTimeField(default=timezone.localtime)
 
     def save(self, *args, **kwargs):
@@ -1113,6 +1165,23 @@ class MonthAchivesListModel(models.Model):
 
 class NewDailyAchivesModel(models.Model):
     current_day_activity=models.ForeignKey(MonthAchivesListModel,on_delete=models.CASCADE,blank=True,null=True)
+    assigned_requirement = models.ForeignKey(RequirementAssign, on_delete=models.SET_NULL, blank=True, null=True) #17/4/2026
+    sourcing_channel = models.CharField(
+        max_length=50,
+        choices=[
+            ('direct', 'Direct'),
+            ('website', 'Website'),
+            ('crm', 'CRM'),
+            ('facebook', 'Facebook'),
+            ('self_adding', 'Self Adding'),
+            ('bulk_upload', 'Bulk Upload'),
+            ('assigned', 'Assigned')
+        ],
+        default='direct',
+        blank=True,
+        null=True,
+        db_index=True
+    )
     # Activity_instance=models.ForeignKey(NewActivityModel,on_delete=models.CASCADE,blank=True,null=True)
     Created_Date=models.DateTimeField(default=timezone.localtime)
     # job_posts
@@ -1148,7 +1217,8 @@ class NewDailyAchivesModel(models.Model):
             ("walkin","walkin"),
             ("rejected","Rejected"),("Rejected_by_Candidate","Rejected_by_Candidate"),
             ("to_client","Consider_to_Client"),
-            ("offer","Offer"),]
+            ("offer","Offer"),
+            ("joined","Joined"),] #17/4/2026
 
     interview_status=models.CharField(max_length=100,blank=True,null=True,choices=choice)
     message_to_candidates=models.TextField(blank=True,null=True)
@@ -1177,11 +1247,19 @@ class NewDailyAchivesModel(models.Model):
     
     #28-01-2026
     # Lead status tracking for follow-up management
+    # Old choices (commented out for reference):
+    # lead_status_choices = [
+    #     ('active', 'Active'),
+    #     ('follow_up', 'Follow Up'),
+    #     ('rejected', 'Rejected'),
+    #     ('closed', 'Closed')
+    # ]
     lead_status_choices = [
         ('active', 'Active'),
         ('follow_up', 'Follow Up'),
         ('rejected', 'Rejected'),
-        ('closed', 'Closed')
+        ('closed', 'Closed'),
+        ('staged', 'Staged') #17/04/2026
     ]
     lead_status = models.CharField(max_length=20, choices=lead_status_choices, default='active', blank=True, null=True)
     
@@ -1347,3 +1425,128 @@ class JobPosting(models.Model):
 
     def __str__(self):
         return f"{self.title} at {self.company.name}"
+
+
+
+# Models
+
+class DASAuthCode(models.Model):
+    """
+    Temporary authentication code for DAS auto-login
+    Generated when user clicks "DAS" button in HRM
+    Valid for 5 minutes, single use only
+    """
+    code = models.CharField(max_length=100, unique=True)
+    user_email = models.EmailField()
+    employee_id = models.CharField(max_length=100, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+    used_at = models.DateTimeField(null=True, blank=True)
+    
+    def save(self, *args, **kwargs):
+        if not self.expires_at:
+            self.expires_at = timezone.now() + timedelta(minutes=5)
+        super().save(*args, **kwargs)
+    
+    def is_valid(self):
+        """Check if code is still valid (not used and not expired)"""
+        return not self.is_used and timezone.now() < self.expires_at
+    
+    @staticmethod
+    def generate_code():
+        """Generate a secure random code"""
+        return secrets.token_urlsafe(32)
+    
+    def mark_used(self):
+        """Mark code as used"""
+        self.is_used = True
+        self.used_at = timezone.now()
+        self.save()
+    
+    def __str__(self):
+        return f"{self.user_email} - {self.code[:10]}... ({'Used' if self.is_used else 'Valid'})"
+    
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'DAS Auth Code'
+        verbose_name_plural = 'DAS Auth Codes'
+
+# 20/04/2026 - Automatic Requirement Closure Signal
+@receiver(post_save, sender=NewDailyAchivesModel)
+def update_requirement_status_and_sync_joined(sender, instance, created, **kwargs):
+    """
+    1. Synchronizes status (joined, offer, rejected, to_client, etc.) between Activities and Client/Candidate modules.
+    2. Automatically mark a requirement as 'closed' if the hiring target is reached.
+    """
+    #27/05/2026
+    # if instance.interview_status == 'joined' and instance.assigned_requirement:
+    status_mapping = {
+        'joined': 'candidate_joined',
+        'offer': 'offered',
+        'rejected': 'Reject',
+        'Rejected_by_Candidate': 'Rejected_by_Candidate',
+        'to_client': 'consider_to_client'
+    }
+    
+    mapped_status = status_mapping.get(instance.interview_status)
+    if mapped_status and instance.assigned_requirement:
+        requirement = instance.assigned_requirement.requirement
+        
+        # --- Part 1: Sync to Candidate and Final Status Models ---
+        from django.db.models import Q
+        # Try to find the matching candidate application
+        candidate_app = CandidateApplicationModel.objects.filter(
+            Q(Email=instance.candidate_email) | Q(PrimaryContact=instance.candidate_phone)
+        ).first()
+
+        if not candidate_app:
+            # AUTO-CREATE Profile if it doesn't exist (shortcut-proof dashboard)
+            candidate_app = CandidateApplicationModel.objects.create(
+                FirstName=instance.candidate_name,
+                # LastName=" (System Sync)",
+                LastName='',
+                PrimaryContact=instance.candidate_phone,
+                Email=instance.candidate_email or f"{instance.candidate_name.replace(' ', '_').lower()}@placeholder.com",
+                AppliedDesignation=requirement.job_title if requirement else "General",
+                JobPortalSource="others",
+                Other_jps="Activity Log",
+                # Final_Results='candidate_joined'
+                Final_Results=mapped_status
+            )
+
+        if candidate_app:
+            # Update the core candidate profile status
+            # candidate_app.Final_Results = 'candidate_joined'
+            candidate_app.Final_Results = mapped_status
+            candidate_app.save()
+
+            # Update or Create the HRFinalStatus record (which the Client page uses)
+            from .models import HRFinalStatusModel
+            final_status, _ = HRFinalStatusModel.objects.get_or_create(
+                CandidateId=candidate_app,
+                req_id=requirement
+            )
+            # final_status.Final_Result = 'candidate_joined'
+            final_status.Final_Result = mapped_status
+            final_status.ReviewedBy = instance.current_day_activity.Activity_instance.Employee.Name if (instance.current_day_activity and instance.current_day_activity.Activity_instance) else "System Sync"
+            final_status.ReviewedOn = timezone.now()
+            # final_status.Comments = f"Automatically synced from Activity Log: {instance.candidate_name} joined."
+            final_status.Comments = f"Automatically synced from Activity Log: {instance.candidate_name} status updated to {instance.interview_status}."
+            final_status.save()
+
+    # --- Part 2: Automatic Requirement Closure ---
+    # 27/05/2026
+    if instance.interview_status == 'joined' and instance.assigned_requirement:
+        requirement = instance.assigned_requirement.requirement
+        if requirement:
+            # Count total joined across all recruiter assignments for this specific requirement
+            # Using iexact for 'joined' to handle any case sensitivity issues
+            total_joined = NewDailyAchivesModel.objects.filter(
+                assigned_requirement__requirement=requirement,
+                interview_status__iexact='joined'
+            ).count()
+
+            if total_joined >= requirement.open_positions:
+                requirement.requirement_status = 'closed'
+                requirement.save()

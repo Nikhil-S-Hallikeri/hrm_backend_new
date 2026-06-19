@@ -209,8 +209,10 @@ class CandidateApplicationSearchView(APIView):
                 Q(PrimaryContact__icontains=search_value) |
                 Q(FirstName__icontains=search_value) |
                 Q(LastName__icontains=search_value) |
-                Q(AppliedDesignation__icontains=search_value)
-            )
+                Q(AppliedDesignation__icontains=search_value) |
+                Q(hrfinalstatusmodel__Comments__icontains=search_value) |
+                Q(review__Comments__icontains=search_value)
+            ).distinct() #22-12-2025
 
         total_count = queryset.count()
 
@@ -261,7 +263,11 @@ class Candidate_Model_Filter(APIView):
                 if field.name != 'id':
                     q_objects |= Q(**{f"{field.name}__icontains": search_value})
 
-            matched_objects = CandidateApplicationModel.objects.filter(q_objects)
+            #22-12-2025
+            # matched_objects = CandidateApplicationModel.objects.filter(q_objects)
+            q_objects |= Q(hrfinalstatusmodel__Comments__icontains=search_value) | Q(review__Comments__icontains=search_value)
+
+            matched_objects = CandidateApplicationModel.objects.filter(q_objects).distinct()
             serializer = FilterCandidateApplicationSerializer(matched_objects, many=True)  # Assuming you have a serializer for YourModel
             return Response(serializer.data)
 
@@ -507,6 +513,9 @@ class FinalResultsCount(APIView):
                 Filled_by="Candidate"
             ).count()
             
+            #22/05/2026
+            yet_to_action = applied_candidates - (internal_hiring + consider_to_client + on_hold + rejected + offered)
+
             response_data = {
                 "internal_hiring": internal_hiring,
                 "consider_to_client": consider_to_client,
@@ -515,7 +524,8 @@ class FinalResultsCount(APIView):
                 "offered_candidates": offered,
                 "scheduled": scheduled,
                 "walkout": walkout,
-                "AppliedCandidates": applied_candidates
+                "AppliedCandidates": applied_candidates,
+                "yet_to_action": yet_to_action  #22/05/2026
             }
 
             return Response(response_data, status=status.HTTP_200_OK)
@@ -535,36 +545,45 @@ class FinalResultsCount(APIView):
 
 class Final_Candidate_Model_Filter(APIView):
     def post(self,request,Final_Results):
+            #22-12-2025
+            # if Final_Results=="Internal Hiring":
+            #     search_value = request.data.get('search_value')  # Assuming the search value is passed in the query parameter 'search_value'
+            # parameter 'search_value'
+            #     q_objects = Q()
+            #     for field in CandidateApplicationModel._meta.fields:
+            #         if field.name != '
+            #         id':
+            #             q_objects |= Q(**{f"{field.name}__icontains": search_val
+            #         ue})
+            #     print(q_objects)
+            #     matched_objects = CandidateApplicationModel.objects.filter(q_objects,Final_Results="Internal Hiring")
+            #     serializer = FinalResultCandidateSerializer(matched_objects, many=True)  # Assuming you have a serializer for YourModel
+            #     return Response(serializer.data)
+            # elif Final_Results=="consider to client":
+            #     search_value = request.data.get('search_value')  # Assuming the search value is passed in the query parameter 'search_value'
+            search_value = request.data.get('search_value', '')
+            q_objects = Q()
+            for field in CandidateApplicationModel._meta.fields:
+                if field.name != 'id':
+                    q_objects |= Q(**{f"{field.name}__icontains": search_value})
+
+            
+            q_objects |= Q(hrfinalstatusmodel__Comments__icontains=search_value) | Q(review__Comments__icontains=search_value)
+
             if Final_Results=="Internal Hiring":
-                search_value = request.data.get('search_value')  # Assuming the search value is passed in the query parameter 'search_value'
-                q_objects = Q()
-                for field in CandidateApplicationModel._meta.fields:
-                    if field.name != 'id':
-                        q_objects |= Q(**{f"{field.name}__icontains": search_value})
-                print(q_objects)
-                matched_objects = CandidateApplicationModel.objects.filter(q_objects,Final_Results="Internal Hiring")
-                serializer = FinalResultCandidateSerializer(matched_objects, many=True)  # Assuming you have a serializer for YourModel
+                matched_objects = CandidateApplicationModel.objects.filter(q_objects,Final_Results="Internal Hiring").distinct()
+                serializer = FinalResultCandidateSerializer(matched_objects, many=True)
                 return Response(serializer.data)
             elif Final_Results=="consider to client":
-                search_value = request.data.get('search_value')  # Assuming the search value is passed in the query parameter 'search_value'
-                q_objects = Q()
-                for field in CandidateApplicationModel._meta.fields:
-                    if field.name != 'id':
-                        q_objects |= Q(**{f"{field.name}__icontains": search_value})
-                print(q_objects)
-                matched_objects = CandidateApplicationModel.objects.filter(q_objects,Final_Results="consider to client")
-                serializer = FinalResultCandidateSerializer(matched_objects, many=True)  # Assuming you have a serializer for YourModel
+                matched_objects = CandidateApplicationModel.objects.filter(q_objects,Final_Results="consider to client").distinct()
+                serializer = FinalResultCandidateSerializer(matched_objects, many=True)
                 return Response(serializer.data)
             elif Final_Results=="Reject":
-                search_value = request.data.get('search_value')  # Assuming the search value is passed in the query parameter 'search_value'
-                q_objects = Q()
-                for field in CandidateApplicationModel._meta.fields:
-                    if field.name != 'id':
-                        q_objects |= Q(**{f"{field.name}__icontains": search_value})
-                print(q_objects)
-                matched_objects = CandidateApplicationModel.objects.filter(q_objects,Final_Results="Reject")
-                serializer = FinalResultCandidateSerializer(matched_objects, many=True)  # Assuming you have a serializer for YourModel
+                matched_objects = CandidateApplicationModel.objects.filter(q_objects,Final_Results="Reject").distinct()
+                serializer = FinalResultCandidateSerializer(matched_objects, many=True)
                 return Response(serializer.data)
+            else:
+                return Response([])
 
 
 def InterviewScheduleSearch(interviewlist=None,screeninglist=None):
@@ -685,7 +704,10 @@ class InterviewScheduleSearchView(APIView):
                     Q(review__interview_Status__icontains=search_value) |
                     Q(review__ReviewedBy__icontains=search_value) |
                     Q(review__ReviewedOn__icontains=search_value) |
-                    Q(review__id__icontains=search_value) )
+                    Q(review__id__icontains=search_value) |
+                    Q(review__Comments__icontains=search_value) |
+                    Q(InterviewScheduledCandidate__hrfinalstatusmodel__Comments__icontains=search_value)
+                ).distinct()
                 
                 emp_obj=EmployeeDataModel.objects.filter(EmployeeId=employee).first()
                 if emp_obj and emp_obj.Designation in ["HR","Admin"]:
@@ -734,7 +756,10 @@ class ScreeningScheduleSearchView(APIView):
                                         Q(screening__Candidate__FirstName__icontains=search_value) |
                                         Q(screening__Candidate__CandidateId__icontains=search_value) |
                                         Q(screening__Recruiter__EmployeeId__icontains=search_value) |
-                                        Q(screening__AssignedBy__EmployeeId__icontains=search_value) ) 
+                                        Q(screening__AssignedBy__EmployeeId__icontains=search_value) |
+                                        Q(review__Comments__icontains=search_value) |
+                                        Q(screening__Candidate__hrfinalstatusmodel__Comments__icontains=search_value)
+                                      ).distinct()
                 
                 assigned_candidates=assigned_candidates.filter(InterviewScheduledCandidate__Telephonic_Round_Status=src_status,screening__Candidate__Filled_by="Candidate")
                 data=InterviewScheduleSearch(screeninglist=assigned_candidates)
@@ -748,12 +773,17 @@ class ScreeningScheduleSearchView(APIView):
 class FinalCandidateSearchView(APIView):
     def get(self, request,search_value):
         try:
-            obj_instance = InterviewScheduleStatusModel.objects.filter(Q(Interview_Schedule_Status="Completed") & Q(InterviewScheduledCandidate__CandidateId__icontains=search_value)
-                                                                        | Q(InterviewScheduledCandidate__FirstName__icontains=search_value)
-                                                                        | Q(InterviewScheduledCandidate__PrimaryContact__icontains=search_value)
-                                                                        | Q(InterviewScheduledCandidate__AppliedDesignation__icontains=search_value)
-                                                                        | Q(InterviewScheduledCandidate__Email__icontains=search_value)
-                                                                    )
+            obj_instance = InterviewScheduleStatusModel.objects.filter(
+                Q(Interview_Schedule_Status="Completed") & (
+                    Q(InterviewScheduledCandidate__CandidateId__icontains=search_value) |
+                    Q(InterviewScheduledCandidate__FirstName__icontains=search_value) |
+                    Q(InterviewScheduledCandidate__PrimaryContact__icontains=search_value) |
+                    Q(InterviewScheduledCandidate__AppliedDesignation__icontains=search_value) |
+                    Q(InterviewScheduledCandidate__Email__icontains=search_value) |
+                    Q(InterviewScheduledCandidate__hrfinalstatusmodel__Comments__icontains=search_value) |
+                    Q(review__Comments__icontains=search_value)
+                )
+            ).distinct()
             interview_status_can = []
             for review_obj in obj_instance:
                 if review_obj.interviewe:
@@ -847,6 +877,7 @@ class CalledCandidatesSearch(APIView):
                                                                     | Q(designation__icontains=search_value)
                                                                     | Q(current_status__icontains=search_value) 
                                                                     | Q(called_by__EmployeeId__icontains=search_value)
+                                                                    | Q(remarks__icontains=search_value)
                                                                     )
                 serializer=CalledCandidatesSerializer(called_can_search,many=True)
                 return Response(serializer.data,status=status.HTTP_200_OK)

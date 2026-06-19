@@ -12,6 +12,8 @@ from django.conf.urls.static import static
 from HRM_App.wish_notification import *
 from rest_framework.routers import DefaultRouter
 from django.urls import include
+from .sso_views import RedirectToDASView, CheckEmployeeStatusAPI
+from .pagination_views import * #17/4/2026
 
 
 # Router for internal HR management endpoints
@@ -123,6 +125,8 @@ urlpatterns = [
 
     # activity sheet urls
     path("add_activity/",ActivityView.as_view(),name='add-activity'),# activity post 
+    path("activity/leads/", IncomingLeadsView.as_view(), name="incoming-leads"), #26/05/2026
+    path("activity/universal-leads/", UniversalLeadsView.as_view(), name="universal-leads"), #5/6/2026
     path('activity/<str:login_user>/', ActivityView.as_view(), name='example-detail'),# employee activitys get 
     path("activity/updel/<int:instance>/",ActivityView.as_view()),# employee activitys delete and update
     path("daily_achives",DailyActivityView.as_view()),  # daily achives post
@@ -152,8 +156,9 @@ urlpatterns = [
     path("new-employees-activity/<str:login_user>",AddNewActivitys.as_view()),
     path("new-assigned-activity/<str:assigned_by>",AddNewActivitys.as_view()),
 
+    path("assigned-requirements/<str:recruiter_id>", AssignedRequirementsView.as_view(), name="recruiter-assignments"),  #17/4/2026
     path("create-daily-achieved-activity",CreateNewDailyAchievedActivitys.as_view()),
-    path("create-daily-achieved-activity/<int:id>",CreateNewDailyAchievedActivitys.as_view()),
+    path("create-daily-achieved-activity/<str:id>",CreateNewDailyAchievedActivitys.as_view()), #6/6/26
     # root/create-daily-achieved-activity?login_emp_id=MTM24E1002 -- post
     # root/create-daily-achieved-activity?activity_list_id=1&login_emp_id=MTM24E1002&date=2024-11-26 -- get
 
@@ -241,6 +246,8 @@ urlpatterns = [
     path("activity/followup/<int:followup_id>/action", FollowUpActionView.as_view(), name="followup-action"),
 
     # Activity pagination endpoints (29-01-2026)
+    #17/04/2026
+    path("activity/staged", StagedActivitiesView.as_view(), name="staged-activities-list"),
     path("activity/total-activities", TotalActivitiesView.as_view(), name="total-activities"),
     path("activity/successful-outcomes", SuccessfulOutcomesView.as_view(), name="successful-outcomes"),
     path("activity/rejected", RejectedLeadsView.as_view(), name="rejected-leads"),
@@ -248,13 +255,83 @@ urlpatterns = [
     path("activity/interview-calls", InterviewCallsView.as_view(), name="interview-calls"),
     path("activity/client-calls", ClientCallsView.as_view(), name="client-calls"),
     path("activity/job-posts", JobPostsView.as_view(), name="job-posts"),
+    path("activity/requirement-performance", RequirementPerformanceView.as_view(), name="requirement-performance"), #17/4/2026
+    
+    #29/04/2026
+    # New Lead Activity Metrics URLs
+    path("activity/lead-total-calls", LeadTotalCallsView.as_view(), name="lead-total-calls"),
+    path("activity/lead-interview-calls", LeadInterviewCallsView.as_view(), name="lead-interview-calls"),
+    path("activity/lead-client-calls", LeadClientCallsView.as_view(), name="lead-client-calls"),
+    path("activity/lead-fresh-calls", LeadFreshCallsView.as_view(), name="lead-fresh-calls"),
+    path("activity/lead-followup-calls", LeadFollowupCallsView.as_view(), name="lead-followup-calls"),
+    path("activity/selected-candidates", SelectedCandidatesView.as_view(), name="selected-candidates"),
+    path("activity/joined-candidates", JoinedCandidatesView.as_view(), name="joined-candidates"),
+    path("activity/screening-calls", ScreeningCallsView.as_view(), name="screening-calls"),
+    path("activity/interview-scheduled", ScheduledInterviewsView.as_view(), name="interview-scheduled"),
+
     path("activity/lead-log/<int:activity_id>", LeadActivityLogView.as_view(), name="lead-activity-log"),
+
+    # ====================================================
+    # COMPREHENSIVE ANALYTICS DRILLDOWN URLS (28/05/2026)
+    # ====================================================
+    # Section 1: Profiles Added
+    path("activity/profiles-walkin", ProfilesWalkinView.as_view(), name="profiles-walkin"),
+    path("activity/profiles-website", ProfilesWebsiteView.as_view(), name="profiles-website"),
+    
+    path("activity/profiles-crm", ProfilesCrmView.as_view(), name="profiles-crm"),
+    path("activity/profiles-facebook", ProfilesFacebookView.as_view(), name="profiles-facebook"),
+    
+    path("activity/profiles-self", ProfilesSelfView.as_view(), name="profiles-self"),
+    path("activity/profiles-bulk", ProfilesBulkView.as_view(), name="profiles-bulk"),
+    path("activity/profiles-assigned", ProfilesAssignedView.as_view(), name="profiles-assigned"),
+
+    # Section 2: Calls Made
+    path("activity/calls-new", CallsNewView.as_view(), name="calls-new"),
+    path("activity/calls-followup", CallsFollowupView.as_view(), name="calls-followup"),
+    path("activity/calls-not-picked", CallsNotPickedView.as_view(), name="calls-not-picked"),
+
+    # Section 3: Interview Pipeline
+    path("activity/interview-scheduled-today", InterviewScheduledTodayView.as_view(), name="interview-scheduled-today"),
+    path("activity/interview-scheduled-tomorrow", InterviewScheduledTomorrowView.as_view(), name="interview-scheduled-tomorrow"),
+    path("activity/interview-scheduled-future", InterviewScheduledFutureView.as_view(), name="interview-scheduled-future"),
+    path("activity/interview-attended", InterviewAttendedView.as_view(), name="interview-attended"),
+    #1/6/2026
+    path("activity/interview-not-attended", InterviewNotAttendedView.as_view(), name="interview-not-attended"),
+    path("activity/interview-followup-pending", InterviewFollowupPendingView.as_view(), name="interview-followup-pending"),
+
+
+    # Section 4: Client Requirement Calls
+    path("activity/client-req-total", ClientReqTotalView.as_view(), name="client-req-total"),
+    path("activity/client-req-new", ClientReqNewView.as_view(), name="client-req-new"),
+    path("activity/client-req-followup", ClientReqFollowupView.as_view(), name="client-req-followup"),
+    path("activity/client-req-prospect", ClientReqProspectView.as_view(), name="client-req-prospect"),
+    path("activity/client-req-converted", ClientReqConvertedView.as_view(), name="client-req-converted"),
+    path("activity/client-req-closed", ClientReqClosedView.as_view(), name="client-req-closed"),
+
+    # Section 5: Final Status
+    path("activity/final-offered", FinalOfferedView.as_view(), name="final-offered"),
+    path("activity/final-joined", FinalJoinedView.as_view(), name="final-joined"),
+    path("activity/final-not-joined", FinalNotJoinedView.as_view(), name="final-not-joined"),
+    path("activity/final-rejected-by-us", FinalRejectedByUsView.as_view(), name="final-rejected-by-us"),
+    path("activity/final-rejected-by-candidate", FinalRejectedByCandidateView.as_view(), name="final-rejected-by-candidate"),
+
+    # Section 6: Pending
+    path("activity/pending-walkins", PendingWalkinsView.as_view(), name="pending-walkins"),
+    path("activity/pending-yet-to-contact", PendingYetToContactView.as_view(), name="pending-yet-to-contact"),
+
+    #17/04/2026
+    # Staged Bulk Upload management
+    path("activity/staged-activities/<str:login_user>", FetchStagedActivitiesView.as_view(), name="staged-activities"),
+    path("activity/activate-staged-activity/<int:activity_id>", ActivateStagedActivityView.as_view(), name="activate-staged-activity"),
 
     path("interview-dashboard-summary/<str:employee_id>", InterviewActivitySummaryView.as_view(), name="interview-dashboard-summary"),
     path("employee-interview-dashboard/<str:employee_id>", EmployeeInterviewDashboardView.as_view(), name="employee-interview-dashboard"),
 
     #changes2
+    path("lead-stages/", LeadStageListView.as_view(), name="lead-stages"), #27/05/2026
     path("public/submit-candidate-form", PublicCandidateInterviewCallView.as_view(), name="public-candidate-form"),
+    path("public/incoming-lead", IncomingExternalLeadView.as_view(), name="incoming-external-lead"),
+    path("public/candidate-referrer-list", CandidateReferrerListView.as_view(), name="candidate-referrer-list"),
 
 ##################################################################
     # URLs for HR Managers: e.g., /api/manage/jobs/
@@ -263,7 +340,14 @@ urlpatterns = [
     # URLs for the external CRM service: e.g., /api/public/jobs/
     path('public/', include(public_router.urls)),
 
+    # SSO Routes for HRM-DAS Integration
+    path('redirect-to-das/<str:employee_id>/', RedirectToDASView.as_view(), name='redirect-to-das'),
+    path('api/check-employee-status/<str:email>/', CheckEmployeeStatusAPI.as_view(), name='check-employee-status'),
     
+    # DAS Auto-Login Routes (New Implementation)
+    path('api/employees-active/', GetActiveEmployeesView.as_view(), name='get-active-employees'),  # For DAS sync
+    path('api/generate-das-code/', GenerateDASCodeView.as_view(), name='generate-das-code'),  # Generate auth code
+    path('api/validate-das-code/', ValidateDASCodeView.as_view(), name='validate-das-code'),  # Validate auth code
 
     
 ]+ static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

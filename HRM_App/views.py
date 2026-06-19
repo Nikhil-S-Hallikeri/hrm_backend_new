@@ -23,6 +23,7 @@ from django.views.decorators.cache import cache_page
 from django.utils.decorators import method_decorator
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
+from django.conf import settings
 from django.db import IntegrityError
 
 from .models import *
@@ -214,7 +215,7 @@ class ForgotPasswordView(APIView):
                 send_mail(
                             subject,
                             f'Your Reset Password OTP is: {otp}',
-                            'sender@example.com',  # Replace with your sender email
+                            settings.EMAIL_HOST_USER,  # Replace with your sender email
                             [email],
                             fail_silently=False,
                     )
@@ -354,6 +355,7 @@ class LoginView(APIView):
                             'message': 'Login Successfull!',
                             "EmployeeId": empid,
                             "UserName": user.UserName,
+                            "Designation":Employee.Designation,
                             "Disgnation":Employee.Designation,
                             "is_reporting_manager":reporting_emp_list,
                             "reporting_emp_list":reporting_emp_list,
@@ -368,6 +370,10 @@ class LoginView(APIView):
                                      "screening_shedule_access":Employee.screening_shedule_access,
                                      "interview_shedule_access":Employee.interview_shedule_access,
                                      "final_status_access":Employee.final_status_access,
+                                     "all_applicants_access":Employee.all_applicants_access,
+                                     #6/6/26
+                                     "leads_access": Employee.leads_access,
+                                     "universal_leads_access": Employee.universal_leads_access,
                                      "self_activity_add": Employee.self_activity_add,
                                     "all_employees_view": Employee.all_employees_view,
                                     "all_employees_edit": Employee.all_employees_edit,
@@ -505,6 +511,99 @@ class CandidateApplicationView(APIView):
         jps=request.data.get("JobPortalSource")
         exist_status=request.data.get("exist_status")
         called_can_id=request.data.get("called_can_id")
+        selected_emp_id = request.data.get("selected_emp_id")
+        primary_contact = request.data.get("PrimaryContact")
+        
+        # --- AUTO STATUS UPDATE / DASHBOARD SYNC LOGIC ---
+        if selected_emp_id and selected_emp_id != "Other" and primary_contact:
+            target_employee = EmployeeDataModel.objects.filter(EmployeeId=selected_emp_id, employeeProfile__employee_status="active").first()
+            if target_employee:
+                # 1. Ensure 'interview_calls' activity and instances exist for this recruiter
+                activity_list, _ = ActivityListModel.objects.get_or_create(
+                    activity_name="interview_calls",
+                    defaults={"added_by": target_employee}
+                )
+                
+                today = timezone.localtime().date()
+                new_activity_instance, _ = NewActivityModel.objects.get_or_create(
+                    Activity=activity_list,
+                    Employee=target_employee,
+                    Activity_assigned_Date__month=today.month,
+                    Activity_assigned_Date__year=today.year,
+                    defaults={
+                        "Activity_assigned_Date": today,
+                        "targets": 0,
+                        "activity_assigned_by": target_employee
+                    }
+                )
+                
+                month_achieve_instance, _ = MonthAchivesListModel.objects.get_or_create(
+                    Activity_instance=new_activity_instance,
+                    Date=today,
+                    defaults={"achieved": 0}
+                )
+
+                # 2. Try to find an existing lead for this candidate with this recruiter
+                # Check for exact phone match or last 10 digits to be safe
+                existing_lead = NewDailyAchivesModel.objects.filter(
+                    Q(candidate_phone=primary_contact) | Q(candidate_phone__icontains=primary_contact[-10:]),
+                    current_day_activity__Activity_instance__Employee=target_employee
+                ).order_by('-Created_Date').first()
+
+                if existing_lead:
+                    # Update existing lead to 'walkin'
+                    existing_lead.interview_status = 'walkin'
+                    existing_lead.lead_status = 'active'
+                    existing_lead.interview_walkin_date = timezone.now()
+                    existing_lead.save()
+
+                    # No follow-up record created here to avoid double-counting calls in metrics.
+                    # Registration via Global Form is tracked via 'walkin' status.
+
+                    # Old Code (Commented for reference):
+                    # FollowUpModel.objects.create(
+                    #     activity_record=existing_lead,
+                    #     follow_up_type='interview',
+                    #     expected_date=today,
+                    #     expected_time=timezone.now().time(),
+                    #     notes="Status Updated: Registered via Global Form. Marked as Interview Attended.",
+                    #     status='completed',
+                    #     completed_on=timezone.now(),
+                    #     created_by=target_employee
+                    # )
+                else:
+                    # Create NEW lead in the dashboard so it's counted
+                    new_lead = NewDailyAchivesModel.objects.create(
+                        current_day_activity=month_achieve_instance,
+                        candidate_name=f"{request.data.get('FirstName', '')} {request.data.get('LastName', '')}".strip(),
+                        candidate_phone=primary_contact,
+                        candidate_email=request.data.get("Email"),
+                        lead_status='active',
+                        interview_status='walkin',
+                        interview_walkin_date=timezone.now(),
+                    )
+                    
+                    # No follow-up record created here to avoid double-counting calls in metrics.
+
+                    # Old Code (Commented for reference):
+                    # FollowUpModel.objects.create(
+                    #     activity_record=new_lead,
+                    #     follow_up_type='interview',
+                    #     expected_date=today,
+                    #     expected_time=timezone.now().time(),
+                    #     notes="New Walk-in: Registered via Global Form. Marked as Interview Attended.",
+                    #     status='completed',
+                    #     completed_on=timezone.now(),
+                    #     created_by=target_employee
+                    # )
+                
+                # Update achieved count for the day
+                daily_achievements_count = NewDailyAchivesModel.objects.filter(
+                    current_day_activity=month_achieve_instance
+                ).exclude(lead_status='staged').count()
+                month_achieve_instance.achieved = daily_achievements_count
+                month_achieve_instance.save()
+        # ------------------------------------------------
         
         # if Position=="Fresher":# Position == 'Fresher' or Position == 'Student':
         request_data=request.data.copy()
@@ -790,12 +889,12 @@ class InterviewSchedulView(APIView):
                 message=f"click the below link to give the review to Candidate {name}.\n\n{review_form}/{interviewe_instance.pk}/"
                 
                 send_mail(subject,message,
-                        'sender@example.com',[Other_EMP_Mail],fail_silently=False)
+                        settings.EMAIL_HOST_USER,[Other_EMP_Mail],fail_silently=False)
                 
             if email_message and email_status=="Yes":
                 subject= f"Interview Schedule From Merida Tech Minds"
                 send_mail(subject=subject,message='',
-                        from_email='sender@example.com',recipient_list=[candidate.Email],fail_silently=False,html_message=email_message)
+                        from_email=settings.EMAIL_HOST_USER,recipient_list=[candidate.Email],fail_silently=False,html_message=email_message)
             
             candidate.Interview_Schedule="Assigned"
             candidate.save()
@@ -1495,10 +1594,10 @@ class UpdateFinalStatusView(APIView):
         serializer = HRInterviewReviewSerializer(data=requestdata)
         if serializer.is_valid():
             instance=serializer.save()
-            if requirement_obj and serializer.data["Final_Result"] == "client_offered":
+            if requirement_obj and serializer.data["Final_Result"] in ["client_offered", "candidate_joined"]:
                 can_obj.Final_Results=serializer.data["Final_Result"]
                 can_obj.save()
-            elif requirement_obj and serializer.data["Final_Result"] != "client_offered":
+            elif requirement_obj and serializer.data["Final_Result"] not in ["client_offered", "candidate_joined"]:
                 pass
             else:
                 can_obj.Final_Results=serializer.data["Final_Result"]
@@ -1508,7 +1607,7 @@ class UpdateFinalStatusView(APIView):
                 send_mail(
                     subject=mail_subject,
                     message='',
-                    from_email='sender@example.com',
+                    from_email=settings.EMAIL_HOST_USER,
                     recipient_list=[can_obj.Email],
                     fail_silently=False, 
                     html_message=mail_message,
@@ -2368,7 +2467,9 @@ class FinalCandidatesListViewView(APIView):
                     Q(Email__icontains=search_value) |
                     Q(PrimaryContact__icontains=search_value) |
                     Q(AppliedDesignation__icontains=search_value) |
-                    Q(JobPortalSource__icontains=search_value)
+                    Q(JobPortalSource__icontains=search_value) |
+                    Q(hrfinalstatusmodel__Comments__icontains=search_value) |
+                    Q(review__Comments__icontains=search_value)  #22/05/2026
                 )
             serializer_class = FinalResultCandidateSerializer
             # serializer_class = FinalResultCandidateSerializer
@@ -2412,7 +2513,7 @@ class FinalCandidatesListViewView(APIView):
                 queryset = CandidateApplicationModel.objects.filter(
                     search_filter,
                     Final_Results="On_Hold"
-                )
+                ).distinct() #22/05/2026
                 if req_id:
                     queryset = queryset.filter(hrfinalstatusmodel__req_id=req_id)
             elif FinalStatus in ["offered", "OfferdCandidates"]:
@@ -2424,8 +2525,10 @@ class FinalCandidatesListViewView(APIView):
                         Q(Name__icontains=search_value)|
                         Q(Email__icontains=search_value)|
                         Q(CandidateId__CandidateId__icontains=search_value)|
-                        Q(Designation__icontains=search_value)
-                    )
+                        Q(Designation__icontains=search_value)|
+                        Q(CandidateId__hrfinalstatusmodel__Comments__icontains=search_value)|
+                        Q(CandidateId__review__Comments__icontains=search_value)
+                    ).distinct() #22/05/2026
                 
                 if from_date and to_date:
                      queryset = queryset.filter(OfferedDate__range=[from_date, to_date])
@@ -2434,6 +2537,49 @@ class FinalCandidatesListViewView(APIView):
                 paginator, page = self.paginate_queryset(queryset.order_by("-id"), request)
                 serializer = serializer_class(page, many=True)
                 return paginator.get_paginated_response(serializer.data)
+            #22/05/2026    
+            elif FinalStatus in ["yet_to_action", "Yet to Action"]:
+                internal_hiring_ids = HRFinalStatusModel.objects.filter(
+                    Final_Result="Internal_Hiring",
+                    CandidateId__Final_Results="Internal_Hiring"
+                ).values_list("CandidateId_id", flat=True)
+
+                consider_hr_ids = HRFinalStatusModel.objects.filter(
+                    Final_Result="consider_to_client",
+                    CandidateId__Final_Results="consider_to_client"
+                ).values_list("CandidateId_id", flat=True)
+                consider_review_ids = Review.objects.filter(
+                    Screening_Status="to_client"
+                ).values_list("CandidateId_id", flat=True)
+
+                on_hold_ids = CandidateApplicationModel.objects.filter(
+                    Final_Results="On_Hold"
+                ).values_list("id", flat=True)
+
+                rejected_hr_ids = HRFinalStatusModel.objects.filter(
+                    Final_Result__in=["Reject", "Rejected_by_Candidate"]
+                ).values_list("CandidateId_id", flat=True)
+                rejected_review_ids = Review.objects.filter(
+                    Screening_Status="rejected"
+                ).values_list("CandidateId_id", flat=True)
+
+                offered_ids = OfferLetterModel.objects.filter(
+                    Letter_sended_status=True
+                ).values_list("CandidateId_id", flat=True)
+
+                actioned_ids = set(internal_hiring_ids) | set(consider_hr_ids) | set(consider_review_ids) | set(on_hold_ids) | set(rejected_hr_ids) | set(rejected_review_ids) | set(offered_ids)
+                actioned_ids = {x for x in actioned_ids if x is not None}
+
+                queryset = CandidateApplicationModel.objects.filter(
+                    search_filter,
+                    Filled_by="Candidate"
+                ).exclude(id__in=actioned_ids)
+
+                if from_date and to_date:
+                    queryset = queryset.filter(DataOfApplied__range=[from_date, to_date])
+                if req_id:
+                    queryset = queryset.filter(hrfinalstatusmodel__req_id=req_id)
+                queryset = queryset.distinct()
             elif FinalStatus == "All Applicants":
                 queryset = CandidateApplicationModel.objects.filter(search_filter)
                 if from_date and to_date:
@@ -2585,7 +2731,7 @@ class CompleteFinalStatusView(APIView):
             return Response(list,status=status.HTTP_200_OK)
         except Exception as e:
             print(e) 
-            return Response(e, status=status.HTTP_400_BAD_REQUEST)
+            return Response(str(e), status=status.HTTP_400_BAD_REQUEST)
         
 from HRM_App import models
 from django.utils import timezone
@@ -2867,7 +3013,7 @@ class SendOfferLetterEmail(APIView):
                         Message=offer_letter["offer_mail_content"]
                         send_mail(
                         subject=subject,message='',
-                        from_email='sender@example.com',  
+                        from_email=settings.EMAIL_HOST_USER,  
                         recipient_list=[offer_letter_obj.Email],
                         fail_silently=False,
                         html_message=Message
@@ -2959,7 +3105,7 @@ class JoiningAppointmentMail(APIView):
         
             send_mail(
                     subject,Message,
-                    'sender@example.com',  
+                    settings.EMAIL_HOST_USER,  
                     [candidate.Email],
                     fail_silently=False,
                     )
@@ -2985,7 +3131,7 @@ class DocumentsUploasForm(APIView):
             Message = mail_content
             send_mail(
                     subject,Message,
-                    'sender@example.com',  
+                    settings.EMAIL_HOST_USER,  
                     [can_obj.Email],
                     fail_silently=False,
                     )
@@ -3061,7 +3207,7 @@ class BG_VerificationMailSendView(APIView):
             Message=message+form
             send_mail(
                     subject,Message,
-                    'sender@example.com',  
+                    settings.EMAIL_HOST_USER,  
                     [to_mail],
                     fail_silently=False,
                     )
@@ -3162,7 +3308,7 @@ class PendingJoiningFormsView(APIView):
             
             send_mail(
                 subject, message,
-                'sender@example.com',
+                settings.EMAIL_HOST_USER,
                 [candidate.Email],
                 fail_silently=False,
             )
@@ -3386,53 +3532,355 @@ class ActivityDashboardAnalyticsView(APIView):
         daily_records = NewDailyAchivesModel.objects.filter(
             current_day_activity__in=daily_achievements
         )
-        total_activities = daily_records.count()
         
-        successful_outcomes_count = daily_records.filter(
-            Q(interview_status='interview_scheduled') | Q(interview_status='offer') | Q(interview_status='walkin') | Q(client_status='job')
+        requirement_id = request.GET.get("requirement_id")
+        if requirement_id:
+            daily_records = daily_records.filter(assigned_requirement_id=requirement_id)
+
+        # total_activities = daily_records.count()
+        # successful_outcomes_count = daily_records.filter(
+        #     Q(interview_status='interview_scheduled') | Q(interview_status='offer') | Q(interview_status='walkin') | Q(client_status='job')
+        # ).count()
+        # Achieving metrics calculate based on non-staged records
+        
+        #17/04/2026
+        non_staged_records = daily_records.exclude(lead_status='staged')
+        total_activities = non_staged_records.count()
+        
+        successful_outcomes_count = non_staged_records.filter(
+            Q(interview_status__in=['joined', 'offer']) | 
+            Q(client_status__in=['job', 'consider_to_client', 'converted_to_client'])
+        ).count()
+
+        joined_count = non_staged_records.filter(
+            Q(interview_status='joined') | Q(client_status='job')
+        ).count()
+
+        selected_count = non_staged_records.filter(
+            Q(interview_status='offer') | 
+            Q(client_status__in=['consider_to_client', 'converted_to_client'])
+        ).count()
+
+        screening_count = non_staged_records.filter(
+            interview_status='screening'
+        ).count()
+
+        scheduled_count = non_staged_records.filter(
+            Q(interview_scheduled_date__isnull=False) | Q(interview_status='interview_scheduled')
         ).count()
         
         # Rejected: Prioritize lead_status if set, otherwise use interview_status
-        rejected_count = daily_records.filter(
+        # rejected_count = daily_records.filter(
+        #17/04/2026
+        rejected_count = non_staged_records.filter(
             Q(lead_status='rejected') | 
             (Q(lead_status__isnull=True) & (Q(interview_status='rejected') | Q(interview_status='Rejected_by_Candidate')))
         ).count()
         
         # Closed: Prioritize lead_status if set, otherwise use client_status
-        closed_count = daily_records.filter(
+        # closed_count = daily_records.filter(
+        #17/04/2026
+        closed_count = non_staged_records.filter(
             Q(lead_status='closed') | 
             (Q(lead_status__isnull=True) & Q(client_status='closed'))
         ).count()
         
         # Pending Follow Ups
+        # pending_followups_count = FollowUpModel.objects.filter(
+        #17/04/2026
         pending_followups_count = FollowUpModel.objects.filter(
-            activity_record__in=daily_records,
+            activity_record__in=non_staged_records,
             status='pending'
         ).count()
         
         # Completed Follow Ups
+        # completed_followups_count = FollowUpModel.objects.filter(
+        #17/04/2026
         completed_followups_count = FollowUpModel.objects.filter(
-            activity_record__in=daily_records,
+            activity_record__in=non_staged_records,
             status='completed'
         ).count()
-
-        job_posts_count = daily_records.filter(
+ 
+        # job_posts_count = daily_records.filter(
+        #17/04/2026
+        job_posts_count = non_staged_records.filter(
             current_day_activity__Activity_instance__Activity__activity_name='job_posts'
         ).count()
         
-        interview_calls_count = daily_records.filter(
+        # interview_calls_count = daily_records.filter(
+        interview_calls_count = non_staged_records.filter(
             current_day_activity__Activity_instance__Activity__activity_name='interview_calls'
         ).count()
-
-        client_calls_count = daily_records.filter(
+ 
+        # client_calls_count = daily_records.filter(
+        client_calls_count = non_staged_records.filter(
             current_day_activity__Activity_instance__Activity__activity_name='client_calls'
         ).count()
-
-        total_calls_count = daily_records.filter(
+ 
+        # total_calls_count = daily_records.filter(
+        total_calls_count = non_staged_records.filter(
             Q(current_day_activity__Activity_instance__Activity__activity_name='interview_calls') | 
             Q(current_day_activity__Activity_instance__Activity__activity_name='client_calls')
         ).count()
+
+        # Lead Activity Metrics (New Card)
+        completed_followups = FollowUpModel.objects.filter(
+            activity_record__in=non_staged_records,
+            status='completed'
+        )
+        fup_interview_count = completed_followups.filter(follow_up_type='interview').count()
+        fup_client_count = completed_followups.filter(follow_up_type='client').count()
+
+        # lead_total_calls = total_calls_count + completed_followups_count
+        lead_total_calls = total_calls_count 
+        # lead_interview_calls = interview_calls_count + fup_interview_count
+        lead_interview_calls = interview_calls_count
+        # lead_client_calls = client_calls_count + fup_client_count
+        lead_client_calls = client_calls_count
+
+        # Old Code (Commented for reference):
+        # lead_interview_calls = interview_calls_count + fup_interview_count
+        # lead_client_calls = client_calls_count + fup_client_count
+
+        lead_fresh_calls = total_calls_count
+        lead_followup_calls = completed_followups_count
+        #17/4/2026
+        # Requirement breakdown (17/04/2026)
+        requirement_breakdown = non_staged_records.filter(
+            assigned_requirement__isnull=False
+        ).values(
+            'assigned_requirement',
+            'assigned_requirement__requirement__job_title',
+            'assigned_requirement__requirement__client__client_name'
+        ).annotate(
+            total_calls=Count('id'),
+            successful_outcomes=Count('id', filter=Q(interview_status__in=['interview_scheduled', 'offer', 'walkin']) | Q(client_status__in=['job', 'consider_to_client', 'converted_to_client']))
+        ).order_by('-total_calls')
+
+        # ============================
+        # COMPREHENSIVE ANALYTICS (28/05/2026)
+        # ============================
+        # Base interview-only queryset (includes both staged and active)
+        all_interview_records = daily_records.filter(
+            current_day_activity__Activity_instance__Activity__activity_name='interview_calls'
+        )
+
+        # --- SECTION 1: Profiles Added ---
+        profiles_total = all_interview_records.count()
         
+        # Bulk Uploaded query filter
+        bulk_q = Q(sourcing_channel='bulk_upload') | Q(lead_status='staged')
+        profiles_bulk = all_interview_records.filter(bulk_q).count()
+        
+        # Other profiles (exclude bulk uploads and assigned profiles to keep categories mutually exclusive)
+        non_bulk_records = all_interview_records.exclude(bulk_q).exclude(sourcing_channel='assigned')
+        
+        # Walk-in / Direct: candidate physically walked in
+        direct_q = Q(sourcing_channel='direct') | (
+            (Q(sourcing_channel__isnull=True) | Q(sourcing_channel='')) & (
+                Q(source__icontains='direct') | Q(source__icontains='walkin') | Q(source__icontains='walk-in') | Q(source__icontains='walk in')
+            )
+        )
+        profiles_walkin = non_bulk_records.filter(direct_q).count()
+        
+        # Website / Platform: from standard external web platforms
+        website_q = Q(sourcing_channel='website') | (
+            (Q(sourcing_channel__isnull=True) | Q(sourcing_channel='')) & (
+                Q(source__icontains='website') | Q(source__icontains='linkedin') |
+                Q(source__icontains='naukri') | Q(source__icontains='indeed') |
+                Q(source__icontains='portal') | Q(source__icontains='online') |
+                Q(source__icontains='api')
+            )
+        )
+        profiles_website = non_bulk_records.filter(website_q).exclude(
+            Q(source__icontains='crm') | Q(source__icontains='facebook') | Q(source__icontains='meta') | Q(source__icontains='social')
+        ).count()
+
+        # CRM: from CRM external integrations
+        crm_q = Q(sourcing_channel='crm') | (
+            (Q(sourcing_channel__isnull=True) | Q(sourcing_channel='')) & Q(source__icontains='crm')
+        )
+        profiles_crm = non_bulk_records.filter(crm_q).count()
+
+        # Facebook / Social Media: from Facebook or other social channels
+        facebook_q = Q(sourcing_channel='facebook') | (
+            (Q(sourcing_channel__isnull=True) | Q(sourcing_channel='')) & (
+                Q(source__icontains='facebook') | Q(source__icontains='meta') | Q(source__icontains='social')
+            )
+        )
+        profiles_facebook = non_bulk_records.filter(facebook_q).count()
+        
+        # Self Added: employee manually added from Add Activity form
+        self_q = Q(sourcing_channel='self_adding') | (
+            (Q(sourcing_channel__isnull=True) | Q(sourcing_channel='')) & (
+                Q(source__icontains='self') | Q(source__icontains='manual') | Q(source__iexact='')
+            )
+        )
+        profiles_self = non_bulk_records.filter(self_q).exclude(
+            Q(source__icontains='crm') | Q(source__icontains='facebook') | Q(source__icontains='meta') | Q(source__icontains='social')
+        ).count()
+        
+        #6/6/26
+        # Assigned to recruiter (both sourced daily leads and candidate applications assigned)
+        sourced_assigned_count = all_interview_records.filter(sourcing_channel='assigned').count()
+        import datetime as datetime_mod
+        from .models import ScreeningAssigningModel
+        tz = timezone.get_current_timezone()
+        start_datetime = timezone.make_aware(datetime_mod.datetime.combine(start_date, datetime_mod.time.min), tz)
+        end_datetime = timezone.make_aware(datetime_mod.datetime.combine(end_date, datetime_mod.time.max), tz)
+        cand_assigned_count = ScreeningAssigningModel.objects.filter(
+            Recruiter__in=target_employees,
+            Date_of_assigned__range=(start_datetime, end_datetime)
+        ).count()
+        profiles_assigned = sourced_assigned_count + cand_assigned_count
+
+        # Base interview-only queryset (non-staged) for Calls and subsequent sections
+        interview_records = non_staged_records.filter(
+            current_day_activity__Activity_instance__Activity__activity_name='interview_calls'
+        )
+
+        # --- SECTION 2: Calls Made ---
+        # A call is counted only when interview_status is set (recruiter changed status from fresh state)
+        calls_total = lead_total_calls
+        # New calls: status is set but no completed follow-ups exist (first-time contact)
+        completed_fup_record_ids = FollowUpModel.objects.filter(
+            activity_record__in=interview_records,
+            status='completed'
+        ).values_list('activity_record_id', flat=True)
+        calls_new = interview_records.filter(
+            interview_status__isnull=False
+        ).exclude(interview_status='').exclude(id__in=completed_fup_record_ids).count()
+        # Follow-up calls: completed follow-ups of type interview
+        calls_followup = FollowUpModel.objects.filter(
+            activity_record__in=interview_records,
+            status='completed',
+            follow_up_type='interview'
+        ).count()
+        # Sub-breakdown by status
+        calls_not_picked = interview_records.filter(interview_status='call_notpicked').count()
+        calls_disconnect = interview_records.filter(interview_status='dis_connect').count()
+        calls_will_revert = interview_records.filter(interview_status='will_revert_back').count()
+
+        # --- SECTION 3: Interview Pipeline ---
+        import datetime as dt
+        tz = timezone.get_current_timezone()
+        
+        today_local = timezone.localdate()
+        tomorrow_local = today_local + timedelta(days=1)
+        
+        today_start = timezone.make_aware(dt.datetime.combine(today_local, dt.time.min), tz)
+        today_end = timezone.make_aware(dt.datetime.combine(today_local, dt.time.max), tz)
+        
+        tomorrow_start = timezone.make_aware(dt.datetime.combine(tomorrow_local, dt.time.min), tz)
+        tomorrow_end = timezone.make_aware(dt.datetime.combine(tomorrow_local, dt.time.max), tz)
+        
+        # Scheduled today
+        interview_scheduled_today = interview_records.filter(
+            interview_status='interview_scheduled',
+            interview_scheduled_date__range=(today_start, today_end)
+        ).count()
+        # Scheduled tomorrow
+        interview_scheduled_tomorrow = interview_records.filter(
+            interview_status='interview_scheduled',
+            interview_scheduled_date__range=(tomorrow_start, tomorrow_end)
+        ).count()
+        # Scheduled future (beyond tomorrow)
+        interview_scheduled_future = interview_records.filter(
+            interview_status='interview_scheduled',
+            interview_scheduled_date__gt=tomorrow_end
+        ).count()
+        # Attended / Conducted (walkin status or walkin date not null)
+        interview_attended_total = interview_records.filter(
+            Q(interview_walkin_date__isnull=False) | Q(interview_status='walkin')
+        ).count()
+        interview_conducted = interview_attended_total  # same metric, alias
+
+        #1/6/2026
+        # Not Attended: scheduled date has passed, status still "interview_scheduled"
+        interview_not_attended = interview_records.filter(
+            interview_status='interview_scheduled',
+            interview_scheduled_date__lt=today_start
+        ).count()
+
+        # Follow-up Pending: not attended (scheduled date passed, status still "interview_scheduled")
+        # OR has pending follow-up of type 'interview'
+        not_attended_ids = interview_records.filter(
+            interview_status='interview_scheduled',
+            interview_scheduled_date__lt=today_start
+        ).values_list('id', flat=True)
+        
+        explicit_fup_ids = FollowUpModel.objects.filter(
+            activity_record__in=interview_records,
+            status='pending',
+            follow_up_type='interview'
+        ).values_list('activity_record_id', flat=True)
+        
+        interview_followup_pending = interview_records.filter(
+            Q(id__in=not_attended_ids) | Q(id__in=explicit_fup_ids)
+        ).distinct().count()
+
+
+        # --- SECTION 4: Client Requirement Calls ---
+        # These are interview_calls records that are tagged to a client requirement
+        client_req_records = interview_records.filter(assigned_requirement__isnull=False)
+        client_req_total = client_req_records.count()
+        
+        # Closed requirement leads: status closed or rejected
+        client_req_closed = client_req_records.filter(lead_status__in=['closed', 'rejected']).count()
+
+        # Converted / Selected: forwarded to client, offered, or joined (excluding closed/rejected)
+        client_req_converted = client_req_records.filter(
+            interview_status__in=['to_client', 'offer', 'joined']
+        ).exclude(lead_status__in=['closed', 'rejected']).count()
+
+        # Follow-up: lead status is follow_up (excluding closed/rejected and converted)
+        client_req_followup = client_req_records.filter(
+            lead_status='follow_up'
+        ).exclude(lead_status__in=['closed', 'rejected']).exclude(interview_status__in=['to_client', 'offer', 'joined']).count()
+
+        # Prospects: contacted and active (excluding follow_up, closed/rejected)
+        client_req_prospect = client_req_records.filter(
+            lead_status='active',
+            interview_status__in=['call_notpicked', 'dis_connect', 'will_revert_back', 'interview_scheduled', 'walkin']
+        ).count()
+
+        # New: lead status is active and interview_status is not set/empty
+        client_req_new = client_req_records.filter(
+            lead_status='active'
+        ).filter(Q(interview_status__isnull=True) | Q(interview_status='')).count()
+
+        # --- SECTION 5: Final Status ---
+        final_offered = interview_records.filter(interview_status='offer').count()
+        final_joined = interview_records.filter(interview_status='joined').count()
+        # Not joined: offered but lead is closed (without joining)
+        final_not_joined = interview_records.filter(
+            interview_status='offer',
+            lead_status='closed'
+        ).count()
+        # Rejected by us
+        final_rejected_by_us = interview_records.filter(
+            Q(interview_status='rejected') | Q(rejection_type='emp_rejected')
+        ).count()
+        # Rejected by candidate
+        final_rejected_by_candidate = interview_records.filter(
+            Q(interview_status='Rejected_by_Candidate') | Q(rejection_type='candidate_rejected')
+        ).count()
+
+        # --- SECTION 6: Pending ---
+        pending_followups_new = FollowUpModel.objects.filter(
+            activity_record__in=non_staged_records,
+            status='pending'
+        ).count()
+        # Walkins pending: scheduled but date is today or future (not yet happened)
+        pending_walkins = interview_records.filter(
+            interview_status='interview_scheduled',
+            interview_scheduled_date__gte=today_start
+        ).count()
+        # Profiles yet to contact: interview_calls records with NO status set
+        pending_yet_to_contact = interview_records.filter(
+            Q(interview_status__isnull=True) | Q(interview_status='')
+        ).count()
+
         dashboard_data = {
             "date_range": {"start": start_date, "end": end_date},
             "metrics": {
@@ -3445,11 +3893,75 @@ class ActivityDashboardAnalyticsView(APIView):
                 "job_posts_count": job_posts_count,
                 "total_calls_count": total_calls_count,
                 "interview_calls_count": interview_calls_count,
-                "job_post_count": job_posts_count,
+                #17/04/2026
+                # "job_post_count": job_posts_count,
                 "client_calls_count": client_calls_count,
+                # New Lead Activity Metrics
+                "lead_total_calls": lead_total_calls,
+                "lead_interview_calls": lead_interview_calls,
+                "lead_client_calls": lead_client_calls,
+                "lead_fresh_calls": lead_fresh_calls,
+                "lead_followup_calls": lead_followup_calls,
+                # Outcome Breakdown
+                "selected_count": selected_count,
+                "joined_count": joined_count,
+                "screening_count": screening_count,
+                "scheduled_count": scheduled_count,
+
+                # ============================
+                # COMPREHENSIVE ANALYTICS (28/05/2026)
+                # ============================
+                # Section 1: Profiles Added
+                "profiles_total": profiles_total,
+                "profiles_walkin": profiles_walkin,
+                "profiles_website": profiles_website,
+                "profiles_crm": profiles_crm,
+                "profiles_facebook": profiles_facebook,
+                "profiles_self": profiles_self,
+                "profiles_bulk": profiles_bulk,
+                "profiles_assigned": profiles_assigned,
+
+                # Section 2: Calls Made
+                "calls_total": calls_total,
+                "calls_new": calls_new,
+                "calls_followup": calls_followup,
+                "calls_not_picked": calls_not_picked,
+                "calls_disconnect": calls_disconnect,
+                "calls_will_revert": calls_will_revert,
+
+                # Section 3: Interview Pipeline
+                "interview_scheduled_today": interview_scheduled_today,
+                "interview_scheduled_tomorrow": interview_scheduled_tomorrow,
+                "interview_scheduled_future": interview_scheduled_future,
+                "interview_attended_total": interview_attended_total,
+                "interview_conducted": interview_conducted,
+                "interview_not_attended": interview_not_attended,
+                "interview_followup_pending": interview_followup_pending,
+
+
+                # Section 4: Client Requirement Calls
+                "client_req_total": client_req_total,
+                "client_req_new": client_req_new,
+                "client_req_followup": client_req_followup,
+                "client_req_prospect": client_req_prospect,
+                "client_req_converted": client_req_converted,
+                "client_req_closed": client_req_closed,
+
+                # Section 5: Final Status
+                "final_offered": final_offered,
+                "final_joined": final_joined,
+                "final_not_joined": final_not_joined,
+                "final_rejected_by_us": final_rejected_by_us,
+                "final_rejected_by_candidate": final_rejected_by_candidate,
+
+                # Section 6: Pending
+                "pending_followups_new": pending_followups_new,
+                "pending_walkins": pending_walkins,
+                "pending_yet_to_contact": pending_yet_to_contact,
             },
             "daily_performance": list(daily_records.values('current_day_activity__Date').annotate(count=Count('pk')).order_by('current_day_activity__Date')),
             "status_breakdown": list(daily_records.values('interview_status').annotate(count=Count('interview_status')).order_by()),
+            "requirement_breakdown": list(requirement_breakdown) #17/4/2026
         }
         return Response(dashboard_data, status=status.HTTP_200_OK)
 class ActivityDashboardDetailsView(APIView):
@@ -3518,7 +4030,11 @@ class ActivityDashboardDetailsView(APIView):
             # detailed_records = base_records.filter(Q(current_day_activity__Activity_instance__Activity_id=1) | Q(current_day_activity__Activity_instance__Activity_id=3))
             detailed_records = base_records.filter(Q(current_day_activity__Activity_instance__Activity__activity_name='interview_calls') | Q(current_day_activity__Activity_instance__Activity__activity_name='client_calls'))
         elif metric_type == 'successful_outcomes':
-            detailed_records = base_records.filter(Q(interview_status='interview_scheduled') | Q(interview_status='offer') | Q(interview_status='walkin') | Q(client_status='job'))
+            # detailed_records = base_records.filter(Q(interview_status='interview_scheduled') | Q(interview_status='offer') | Q(interview_status='walkin') | Q(client_status='job'))
+            detailed_records = base_records.filter(
+                Q(interview_status__in=['interview_scheduled', 'offer', 'walkin']) | 
+                Q(client_status__in=['job', 'consider_to_client', 'converted_to_client'])
+            )
         elif metric_type == 'follow_ups':
             detailed_records = base_records.filter(Q(interview_status='will_revert_back') | Q(client_status='followup'))
         elif metric_type == 'rejected':
@@ -3545,6 +4061,30 @@ class ActivityDashboardDetailsView(APIView):
         elif metric_type == 'client_calls':
             #  detailed_records = base_records.filter(current_day_activity__Activity_instance__Activity_id=3)
             detailed_records = base_records.filter(current_day_activity__Activity_instance__Activity__activity_name='client_calls')
+        elif metric_type == 'lead_total_calls':
+            # Combined fresh calls and follow-up associated records
+            fup_records = FollowUpModel.objects.filter(activity_record__in=base_records, status='completed').values_list('activity_record_id', flat=True)
+            detailed_records = base_records.filter(
+                Q(current_day_activity__Activity_instance__Activity__activity_name__in=['interview_calls', 'client_calls']) |
+                Q(id__in=fup_records)
+            ).distinct()
+        elif metric_type == 'lead_interview_calls':
+            fup_records = FollowUpModel.objects.filter(activity_record__in=base_records, status='completed', follow_up_type='interview').values_list('activity_record_id', flat=True)
+            detailed_records = base_records.filter(
+                Q(current_day_activity__Activity_instance__Activity__activity_name='interview_calls') |
+                Q(id__in=fup_records)
+            ).distinct()
+        elif metric_type == 'lead_client_calls':
+            fup_records = FollowUpModel.objects.filter(activity_record__in=base_records, status='completed', follow_up_type='client').values_list('activity_record_id', flat=True)
+            detailed_records = base_records.filter(
+                Q(current_day_activity__Activity_instance__Activity__activity_name='client_calls') |
+                Q(id__in=fup_records)
+            ).distinct()
+        elif metric_type == 'lead_fresh_calls':
+            detailed_records = base_records.filter(Q(current_day_activity__Activity_instance__Activity__activity_name='interview_calls') | Q(current_day_activity__Activity_instance__Activity__activity_name='client_calls'))
+        elif metric_type == 'lead_followup_calls':
+            fup_records = FollowUpModel.objects.filter(activity_record__in=base_records, status='completed').values_list('activity_record_id', flat=True)
+            detailed_records = base_records.filter(id__in=fup_records)
         else:
             return Response({"error": "Invalid metric_type specified."}, status=status.HTTP_400_BAD_REQUEST)
         serializer = NewDailyAchivesModelSerializer(detailed_records, many=True)
@@ -3578,13 +4118,31 @@ class InterviewActivitySummaryView(APIView):
                 ReviewedDate__year=current_year
             )
             
+            # Use range filters for database compatibility
+            start_date = timezone.datetime(current_year, current_month, 1)
+            if current_month == 12:
+                next_month_date = timezone.datetime(current_year + 1, 1, 1)
+            else:
+                next_month_date = timezone.datetime(current_year, current_month + 1, 1)
+            
+            if timezone.is_aware(timezone.now()):
+                start_date = timezone.make_aware(start_date)
+                next_month_date = timezone.make_aware(next_month_date)
+
             # Daily Activities (Interview Schedules & Attended/Walkins)
             daily_interview_records = NewDailyAchivesModel.objects.filter(
                 current_day_activity__Activity_instance__Employee__EmployeeId=employee_id,
-                current_day_activity__Activity_instance__Activity__activity_name='interview_calls', # Activity ID for Interview Calls
-                Created_Date__month=current_month,
-                Created_Date__year=current_year
-            )
+            #     current_day_activity__Activity_instance__Activity__activity_name='interview_calls', # Activity ID for Interview Calls
+            #     Created_Date__month=current_month,
+            #     Created_Date__year=current_year
+            # )
+
+                current_day_activity__Activity_instance__Activity__activity_name='interview_calls'
+            ).filter(
+                Q(Created_Date__gte=start_date, Created_Date__lt=next_month_date) |
+                Q(interview_walkin_date__gte=start_date, interview_walkin_date__lt=next_month_date) |
+                Q(interview_scheduled_date__gte=start_date, interview_scheduled_date__lt=next_month_date)
+            ).distinct()
             
             interview_schedule_count = daily_interview_records.filter(interview_status='interview_scheduled').count()
             walkins_attended_count = daily_interview_records.filter(Q(interview_status='walkin')).count()
@@ -3655,18 +4213,33 @@ class EmployeeInterviewDashboardView(APIView):
             return Response({"error": "A valid integer 'month' and 'year' are required."}, status=status.HTTP_400_BAD_REQUEST)
         try:
             # NewDailyAchivesModel Counts (Schedules & Walkins)
-            daily_records = NewDailyAchivesModel.objects.filter(
+            # daily_records = NewDailyAchivesModel.objects.filter(
+            base_qs = NewDailyAchivesModel.objects.filter(
                 current_day_activity__Activity_instance__Employee__EmployeeId=employee_id,
-                current_day_activity__Activity_instance__Activity__activity_name='interview_calls',
-                Created_Date__month=current_month,
-                Created_Date__year=current_year
+                current_day_activity__Activity_instance__Activity__activity_name='interview_calls'
             )
             
             dashboard_counts = defaultdict(int)
-            dashboard_counts['interview_schedule'] = daily_records.filter(interview_status='interview_scheduled').count()
-            dashboard_counts['walkins'] = daily_records.filter(interview_status='walkin').count()
+            # dashboard_counts['interview_schedule'] = daily_records.filter(interview_status='interview_scheduled').count()
+            # dashboard_counts['walkins'] = daily_records.filter(interview_status='walkin').count()
+            # Count based on specific action dates
+            dashboard_counts['interview_schedule'] = base_qs.filter(
+                interview_status='interview_scheduled',
+                interview_scheduled_date__month=current_month,
+                interview_scheduled_date__year=current_year
+            ).count()
             
-            # Additional Activity Statuses
+            dashboard_counts['walkins'] = base_qs.filter(
+                interview_status='walkin',
+                interview_walkin_date__month=current_month,
+                interview_walkin_date__year=current_year
+            ).count()
+            
+            # Additional Activity Statuses (Leads created/handled this month)
+            daily_records = base_qs.filter(
+                Created_Date__month=current_month,
+                Created_Date__year=current_year
+            )
             dashboard_counts['Reject'] += daily_records.filter(interview_status='rejected').count()
             dashboard_counts['consider_to_client'] += daily_records.filter(interview_status='to_client').count()
             dashboard_counts['Rejected_by_Candidate'] += daily_records.filter(interview_status='Rejected_by_Candidate').count()
@@ -3759,6 +4332,13 @@ class BaseActivityPaginationView(APIView):
         
         return EmployeeDataModel.objects.filter(pk=current_user.pk)
 
+    def filter_by_requirement(self, queryset, requirement_id, is_followup=False):
+        if not requirement_id or requirement_id in ['', 'undefined', 'null', 'None']:
+            return queryset
+        if is_followup:
+            return queryset.filter(activity_record__assigned_requirement_id=requirement_id)
+        return queryset.filter(assigned_requirement_id=requirement_id)
+
     def filter_by_date(self, queryset, filter_type, start_date_str, end_date_str):
         today = timezone.localdate()
         if filter_type == 'today':
@@ -3815,6 +4395,7 @@ class TotalActivitiesView(BaseActivityPaginationView):
         start_date = request.GET.get("start_date")
         end_date = request.GET.get("end_date")
         search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
 
         try:
             current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
@@ -3826,6 +4407,35 @@ class TotalActivitiesView(BaseActivityPaginationView):
             current_day_activity__Activity_instance__Employee__in=target_employees
         ).order_by('-Created_Date')
 
+        queryset = self.filter_by_requirement(queryset, requirement_id)
+        queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
+        queryset = self.search_queryset(queryset, search)
+
+        return self.get_paginated_response(queryset, request)
+
+#17/04/2026
+class StagedActivitiesView(BaseActivityPaginationView):
+    def get(self, request):
+        login_emp_id = request.GET.get("login_emp_id")
+        target_emp_id = request.GET.get("target_emp_id")
+        filter_type = request.GET.get("filter_type", "this_month")
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+        search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
+
+        try:
+            current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
+        except EmployeeDataModel.DoesNotExist:
+            return Response({"error": "User not found"}, status=404)
+
+        target_employees = self.get_target_employees(current_user, target_emp_id)
+        queryset = NewDailyAchivesModel.objects.filter(
+            current_day_activity__Activity_instance__Employee__in=target_employees,
+            lead_status='staged'
+        ).order_by('-Created_Date')
+
+        queryset = self.filter_by_requirement(queryset, requirement_id)
         queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
         queryset = self.search_queryset(queryset, search)
 
@@ -3839,6 +4449,7 @@ class SuccessfulOutcomesView(BaseActivityPaginationView):
         start_date = request.GET.get("start_date")
         end_date = request.GET.get("end_date")
         search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
 
         try:
             current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
@@ -3850,9 +4461,10 @@ class SuccessfulOutcomesView(BaseActivityPaginationView):
             current_day_activity__Activity_instance__Employee__in=target_employees
         ).filter(
             Q(interview_status__in=['interview_scheduled', 'offer', 'walkin']) |
-            Q(client_status='job')
+            Q(client_status__in=['job', 'consider_to_client', 'converted_to_client'])
         ).order_by('-Created_Date')
 
+        queryset = self.filter_by_requirement(queryset, requirement_id)
         queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
         queryset = self.search_queryset(queryset, search)
 
@@ -3866,6 +4478,7 @@ class RejectedLeadsView(BaseActivityPaginationView):
         start_date = request.GET.get("start_date")
         end_date = request.GET.get("end_date")
         search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
 
         try:
             current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
@@ -3880,6 +4493,7 @@ class RejectedLeadsView(BaseActivityPaginationView):
             (Q(lead_status__isnull=True) & (Q(interview_status='rejected') | Q(interview_status='Rejected_by_Candidate')))
         ).order_by('-Created_Date')
 
+        queryset = self.filter_by_requirement(queryset, requirement_id)
         queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
         queryset = self.search_queryset(queryset, search)
 
@@ -3893,6 +4507,7 @@ class ClosedLeadsView(BaseActivityPaginationView):
         start_date = request.GET.get("start_date")
         end_date = request.GET.get("end_date")
         search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
 
         try:
             current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
@@ -3907,6 +4522,7 @@ class ClosedLeadsView(BaseActivityPaginationView):
             (Q(lead_status__isnull=True) & Q(client_status='closed'))
         ).order_by('-Created_Date')
 
+        queryset = self.filter_by_requirement(queryset, requirement_id)
         queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
         queryset = self.search_queryset(queryset, search)
 
@@ -3917,6 +4533,7 @@ class PendingFollowUpsView(BaseActivityPaginationView):
         login_emp_id = request.GET.get("login_emp_id")
         target_emp_id = request.GET.get("target_emp_id")
         search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
 
         try:
             current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
@@ -3930,6 +4547,8 @@ class PendingFollowUpsView(BaseActivityPaginationView):
             activity_record__current_day_activity__Activity_instance__Employee__in=target_employees,
             status='pending'
         ).select_related('activity_record').order_by('expected_date', 'expected_time')
+
+        queryset = self.filter_by_requirement(queryset, requirement_id, is_followup=True)
 
         if search:
             queryset = queryset.filter(
@@ -3956,6 +4575,7 @@ class CompletedFollowUpsView(BaseActivityPaginationView):
         login_emp_id = request.GET.get("login_emp_id")
         target_emp_id = request.GET.get("target_emp_id")
         search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
 
         try:
             current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
@@ -3968,6 +4588,8 @@ class CompletedFollowUpsView(BaseActivityPaginationView):
             activity_record__current_day_activity__Activity_instance__Employee__in=target_employees,
             status='completed'
         ).select_related('activity_record').order_by('-expected_date', '-expected_time')
+
+        queryset = self.filter_by_requirement(queryset, requirement_id, is_followup=True)
 
         if search:
             queryset = queryset.filter(
@@ -3997,6 +4619,7 @@ class InterviewCallsView(BaseActivityPaginationView):
         start_date = request.GET.get("start_date")
         end_date = request.GET.get("end_date")
         search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
 
         try:
             current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
@@ -4009,6 +4632,7 @@ class InterviewCallsView(BaseActivityPaginationView):
             current_day_activity__Activity_instance__Activity__activity_name='interview_calls'
         ).order_by('-Created_Date')
 
+        queryset = self.filter_by_requirement(queryset, requirement_id)
         queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
         queryset = self.search_queryset(queryset, search)
 
@@ -4022,6 +4646,7 @@ class ClientCallsView(BaseActivityPaginationView):
         start_date = request.GET.get("start_date")
         end_date = request.GET.get("end_date")
         search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
 
         try:
             current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
@@ -4032,11 +4657,320 @@ class ClientCallsView(BaseActivityPaginationView):
         queryset = NewDailyAchivesModel.objects.filter(
             current_day_activity__Activity_instance__Employee__in=target_employees,
             current_day_activity__Activity_instance__Activity__activity_name='client_calls'
-        ).order_by('-Created_Date')
+        # ).order_by('-Created_Date')
+        ).exclude(lead_status='staged').order_by('-Created_Date')
 
+        queryset = self.filter_by_requirement(queryset, requirement_id)
         queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
         queryset = self.search_queryset(queryset, search)
 
+        return self.get_paginated_response(queryset, request)
+
+#29/04/2026
+class LeadTotalCallsView(BaseActivityPaginationView):
+    def get(self, request):
+        login_emp_id = request.GET.get("login_emp_id")
+        target_emp_id = request.GET.get("target_emp_id")
+        filter_type = request.GET.get("filter_type", "this_month")
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+        search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
+
+        try:
+            current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
+        except EmployeeDataModel.DoesNotExist:
+            return Response({"error": "User not found"}, status=404)
+
+        target_employees = self.get_target_employees(current_user, target_emp_id)
+        
+        fresh_q = Q(current_day_activity__Activity_instance__Employee__in=target_employees,
+                   current_day_activity__Activity_instance__Activity__activity_name__in=['interview_calls', 'client_calls'])
+        
+        fup_records = FollowUpModel.objects.filter(
+            activity_record__current_day_activity__Activity_instance__Employee__in=target_employees,
+            status='completed'
+        ).values_list('activity_record_id', flat=True)
+        
+        # queryset = NewDailyAchivesModel.objects.filter(fresh_q | Q(id__in=fup_records)).distinct().order_by('-Created_Date')
+        queryset = NewDailyAchivesModel.objects.filter(fresh_q | Q(id__in=fup_records)).distinct().exclude(lead_status='staged').order_by('-Created_Date')
+        queryset = self.filter_by_requirement(queryset, requirement_id)
+        queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
+        queryset = self.search_queryset(queryset, search)
+        return self.get_paginated_response(queryset, request)
+
+class LeadInterviewCallsView(BaseActivityPaginationView):
+    def get(self, request):
+        login_emp_id = request.GET.get("login_emp_id")
+        target_emp_id = request.GET.get("target_emp_id")
+        filter_type = request.GET.get("filter_type", "this_month")
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+        search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
+
+        try:
+            current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
+        except EmployeeDataModel.DoesNotExist:
+            return Response({"error": "User not found"}, status=404)
+
+        target_employees = self.get_target_employees(current_user, target_emp_id)
+        
+        fresh_q = Q(current_day_activity__Activity_instance__Employee__in=target_employees,
+                   current_day_activity__Activity_instance__Activity__activity_name='interview_calls')
+        
+        fup_records = FollowUpModel.objects.filter(
+            activity_record__current_day_activity__Activity_instance__Employee__in=target_employees,
+            status='completed',
+            follow_up_type='interview'
+        ).values_list('activity_record_id', flat=True)
+        
+        # queryset = NewDailyAchivesModel.objects.filter(fresh_q | Q(id__in=fup_records)).distinct().order_by('-Created_Date')
+        queryset = NewDailyAchivesModel.objects.filter(fresh_q | Q(id__in=fup_records)).distinct().exclude(lead_status='staged').order_by('-Created_Date')
+        queryset = self.filter_by_requirement(queryset, requirement_id)
+        queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
+        queryset = self.search_queryset(queryset, search)
+        return self.get_paginated_response(queryset, request)
+
+class LeadClientCallsView(BaseActivityPaginationView):
+    def get(self, request):
+        login_emp_id = request.GET.get("login_emp_id")
+        target_emp_id = request.GET.get("target_emp_id")
+        filter_type = request.GET.get("filter_type", "this_month")
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+        search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
+
+        try:
+            current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
+        except EmployeeDataModel.DoesNotExist:
+            return Response({"error": "User not found"}, status=404)
+
+        target_employees = self.get_target_employees(current_user, target_emp_id)
+        
+        fresh_q = Q(current_day_activity__Activity_instance__Employee__in=target_employees,
+                   current_day_activity__Activity_instance__Activity__activity_name='client_calls')
+        
+        fup_records = FollowUpModel.objects.filter(
+            activity_record__current_day_activity__Activity_instance__Employee__in=target_employees,
+            status='completed',
+            follow_up_type='client'
+        ).values_list('activity_record_id', flat=True)
+        
+        # queryset = NewDailyAchivesModel.objects.filter(fresh_q | Q(id__in=fup_records)).distinct().order_by('-Created_Date')
+        queryset = NewDailyAchivesModel.objects.filter(fresh_q | Q(id__in=fup_records)).distinct().exclude(lead_status='staged').order_by('-Created_Date')
+        queryset = self.filter_by_requirement(queryset, requirement_id)
+        queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
+        queryset = self.search_queryset(queryset, search)
+        return self.get_paginated_response(queryset, request)
+
+class LeadFreshCallsView(BaseActivityPaginationView):
+    def get(self, request):
+        login_emp_id = request.GET.get("login_emp_id")
+        target_emp_id = request.GET.get("target_emp_id")
+        filter_type = request.GET.get("filter_type", "this_month")
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+        search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
+
+        try:
+            current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
+        except EmployeeDataModel.DoesNotExist:
+            return Response({"error": "User not found"}, status=404)
+
+        target_employees = self.get_target_employees(current_user, target_emp_id)
+        queryset = NewDailyAchivesModel.objects.filter(
+            current_day_activity__Activity_instance__Employee__in=target_employees,
+            current_day_activity__Activity_instance__Activity__activity_name__in=['interview_calls', 'client_calls']
+        # ).order_by('-Created_Date')
+        ).exclude(lead_status='staged').order_by('-Created_Date')
+
+        queryset = self.filter_by_requirement(queryset, requirement_id)
+        queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
+        queryset = self.search_queryset(queryset, search)
+        return self.get_paginated_response(queryset, request)
+
+class LeadFollowupCallsView(BaseActivityPaginationView):
+    def get(self, request):
+        login_emp_id = request.GET.get("login_emp_id")
+        target_emp_id = request.GET.get("target_emp_id")
+        filter_type = request.GET.get("filter_type", "this_month")
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+        search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
+
+        try:
+            current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
+        except EmployeeDataModel.DoesNotExist:
+            return Response({"error": "User not found"}, status=404)
+
+        target_employees = self.get_target_employees(current_user, target_emp_id)
+        
+        queryset = FollowUpModel.objects.filter(
+            activity_record__current_day_activity__Activity_instance__Employee__in=target_employees,
+            status='completed'
+        # ).select_related('activity_record').order_by('-expected_date', '-expected_time')
+        ).exclude(activity_record__lead_status='staged').select_related('activity_record').order_by('-expected_date', '-expected_time')
+        
+        queryset = self.filter_by_requirement(queryset, requirement_id, is_followup=True)
+        
+        # Manual date filtering for FollowUpModel
+        today = timezone.localdate()
+        if filter_type == 'today':
+            queryset = queryset.filter(activity_record__current_day_activity__Date=today)
+        elif filter_type == 'this_week':
+            s_date = today - timedelta(days=today.weekday())
+            queryset = queryset.filter(activity_record__current_day_activity__Date__range=(s_date, today))
+        elif filter_type == 'this_month':
+            s_date = today.replace(day=1)
+            queryset = queryset.filter(activity_record__current_day_activity__Date__range=(s_date, today))
+        elif filter_type == 'prev_month':
+            prev_month = today - relativedelta(months=1)
+            s_date = prev_month.replace(day=1)
+            e_date = prev_month.replace(day=monthrange(prev_month.year, prev_month.month)[1])
+            queryset = queryset.filter(activity_record__current_day_activity__Date__range=(s_date, e_date))
+        elif filter_type == 'custom' and start_date and end_date:
+            try:
+                s_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+                e_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+                queryset = queryset.filter(activity_record__current_day_activity__Date__range=(s_date, e_date))
+            except ValueError:
+                pass
+
+        # For FollowUpModel, search needs to look into the activity_record
+        if search:
+            queryset = queryset.filter(
+                Q(activity_record__candidate_name__icontains=search) |
+                Q(activity_record__candidate_phone__icontains=search) |
+                Q(activity_record__client_name__icontains=search) |
+                Q(activity_record__client_phone__icontains=search)
+            )
+
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        if page is not None:
+            serializer = FollowUpSerializer(page, many=True)
+            return paginator.get_paginated_response(serializer.data)
+            
+        serializer = FollowUpSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+#30/04/2026
+class ScreeningCallsView(BaseActivityPaginationView):
+    def get(self, request):
+        login_emp_id = request.GET.get("login_emp_id")
+        target_emp_id = request.GET.get("target_emp_id")
+        filter_type = request.GET.get("filter_type", "this_month")
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+        search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
+
+        try:
+            current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
+        except EmployeeDataModel.DoesNotExist:
+            return Response({"error": "User not found"}, status=404)
+
+        target_employees = self.get_target_employees(current_user, target_emp_id)
+        
+        queryset = NewDailyAchivesModel.objects.filter(
+            interview_status='screening',
+            current_day_activity__Activity_instance__Employee__in=target_employees
+        # ).order_by('-Created_Date')
+        ).exclude(lead_status='staged').order_by('-Created_Date')
+        
+        queryset = self.filter_by_requirement(queryset, requirement_id)
+        queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
+        queryset = self.search_queryset(queryset, search)
+        return self.get_paginated_response(queryset, request)
+
+class ScheduledInterviewsView(BaseActivityPaginationView):
+    def get(self, request):
+        login_emp_id = request.GET.get("login_emp_id")
+        target_emp_id = request.GET.get("target_emp_id")
+        filter_type = request.GET.get("filter_type", "this_month")
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+        search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
+
+        try:
+            current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
+        except EmployeeDataModel.DoesNotExist:
+            return Response({"error": "User not found"}, status=404)
+
+        target_employees = self.get_target_employees(current_user, target_emp_id)
+        
+        queryset = NewDailyAchivesModel.objects.filter(
+            current_day_activity__Activity_instance__Employee__in=target_employees
+        ).filter(
+            Q(interview_scheduled_date__isnull=False) | Q(interview_status='interview_scheduled')
+        ).exclude(lead_status='staged').order_by('-Created_Date')
+        
+        queryset = self.filter_by_requirement(queryset, requirement_id)
+        queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
+        queryset = self.search_queryset(queryset, search)
+        return self.get_paginated_response(queryset, request)
+
+# 01/05/2026 
+class JoinedCandidatesView(BaseActivityPaginationView):
+    def get(self, request):
+        login_emp_id = request.GET.get("login_emp_id")
+        target_emp_id = request.GET.get("target_emp_id")
+        filter_type = request.GET.get("filter_type", "this_month")
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+        search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
+
+        try:
+            current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
+        except EmployeeDataModel.DoesNotExist:
+            return Response({"error": "User not found"}, status=404)
+
+        target_employees = self.get_target_employees(current_user, target_emp_id)
+        
+        queryset = NewDailyAchivesModel.objects.filter(
+            Q(interview_status='joined') | Q(client_status='job'),
+            current_day_activity__Activity_instance__Employee__in=target_employees
+        # ).order_by('-Created_Date')
+        ).exclude(lead_status='staged').order_by('-Created_Date')
+        
+        queryset = self.filter_by_requirement(queryset, requirement_id)
+        queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
+        queryset = self.search_queryset(queryset, search)
+        return self.get_paginated_response(queryset, request)
+
+class SelectedCandidatesView(BaseActivityPaginationView):
+    def get(self, request):
+        login_emp_id = request.GET.get("login_emp_id")
+        target_emp_id = request.GET.get("target_emp_id")
+        filter_type = request.GET.get("filter_type", "this_month")
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+        search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
+
+        try:
+            current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
+        except EmployeeDataModel.DoesNotExist:
+            return Response({"error": "User not found"}, status=404)
+
+        target_employees = self.get_target_employees(current_user, target_emp_id)
+        
+        queryset = NewDailyAchivesModel.objects.filter(
+            Q(interview_status='offer') | 
+            Q(client_status__in=['consider_to_client', 'converted_to_client']),
+            current_day_activity__Activity_instance__Employee__in=target_employees
+        # ).order_by('-Created_Date')
+        ).exclude(lead_status='staged').order_by('-Created_Date')
+        
+        queryset = self.filter_by_requirement(queryset, requirement_id)
+        queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
+        queryset = self.search_queryset(queryset, search)
         return self.get_paginated_response(queryset, request)
 
 class JobPostsView(BaseActivityPaginationView):
@@ -4047,6 +4981,7 @@ class JobPostsView(BaseActivityPaginationView):
         start_date = request.GET.get("start_date")
         end_date = request.GET.get("end_date")
         search = request.GET.get("search")
+        requirement_id = request.GET.get("requirement_id")
 
         try:
             current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
@@ -4057,8 +4992,10 @@ class JobPostsView(BaseActivityPaginationView):
         queryset = NewDailyAchivesModel.objects.filter(
             current_day_activity__Activity_instance__Employee__in=target_employees,
             current_day_activity__Activity_instance__Activity__activity_name='job_posts'
-        ).order_by('-Created_Date')
+        # ).order_by('-Created_Date')
+        ).exclude(lead_status='staged').order_by('-Created_Date')
 
+        queryset = self.filter_by_requirement(queryset, requirement_id)
         queryset = self.filter_by_date(queryset, filter_type, start_date, end_date)
         queryset = self.search_queryset(queryset, search)
 
@@ -4076,7 +5013,25 @@ class ConvertToFollowUpView(APIView):
             return Response({"error": "activity_record_id, expected_date, expected_time, and login_emp_id are required."}, status=status.HTTP_400_BAD_REQUEST)
             
         try:
-            activity_record = NewDailyAchivesModel.objects.get(pk=activity_record_id)
+            if activity_record_id and isinstance(activity_record_id, str) and activity_record_id.startswith("c_"):
+                candidate_id = int(activity_record_id[2:])
+                activity_record = NewDailyAchivesModel.objects.get(url=f"candidate:{candidate_id}")
+            else:
+                activity_record = NewDailyAchivesModel.objects.get(pk=activity_record_id)
+            #17/04/2026
+            # If the record is staged (bulk uploaded), we activate it now
+            if activity_record.lead_status == 'staged':
+                activity_record.lead_status = 'active'
+                activity_record.save()
+                
+                # Recalculate daily achievement now that it's active
+                if activity_record.current_day_activity:
+                    parent = activity_record.current_day_activity
+                    parent.achieved = NewDailyAchivesModel.objects.filter(
+                        current_day_activity=parent
+                    ).exclude(lead_status='staged').count()  #17/04/2026
+                    parent.save()
+                    
             current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
         except NewDailyAchivesModel.DoesNotExist:
             return Response({"error": "Activity record not found."}, status=status.HTTP_404_NOT_FOUND)
@@ -4130,7 +5085,19 @@ class FollowUpActionView(APIView):
         if action == 'complete':
             followup.status = 'completed'
             followup.completed_on = timezone.localtime()
+            comment = notes or remarks
+            if comment:
+                followup.notes = comment
             followup.save()
+
+            if comment:
+                activity_record = followup.activity_record
+                if followup.follow_up_type == 'interview':
+                    activity_record.interview_call_remarks = comment
+                elif followup.follow_up_type == 'client':
+                    activity_record.client_call_remarks = comment
+                activity_record.save()
+
             return Response({"message": "Follow-up marked as completed"})
         
         elif action == 'call_again':
@@ -4180,3 +5147,241 @@ class FollowUpActionView(APIView):
         return Response({"error": "Invalid action."}, status=status.HTTP_400_BAD_REQUEST)
 
 		
+# ============================================
+# DAS AUTO-LOGIN ENDPOINTS
+# ============================================
+
+class GetActiveEmployeesView(APIView):
+    """
+    Get all active employees from HRM for DAS sync
+    Called by DAS to fetch employee data
+    """
+    permission_classes = []  # Will add proper auth later
+    
+    def get(self, request):
+        try:
+            # Get all active employees
+            employees = EmployeeInformation.objects.filter(
+                employee_status='active'
+            )
+            
+            employee_list = []
+            for emp in employees:
+                employee_data = {
+                    'employee_Id': emp.employee_Id,
+                    'full_name': emp.full_name,
+                    'email': emp.email,
+                    'Employeement_Type': emp.Employeement_Type,
+                    'work_location': emp.work_location,
+                    'hired_date': emp.hired_date.isoformat() if emp.hired_date else None,
+                    'employee_status': emp.employee_status,
+                    'date_of_birth': emp.date_of_birth.isoformat() if emp.date_of_birth else None,
+                    'phone': emp.mobile,
+                }
+                
+                # Get designation from EmployeeDataModel (Admin/HR/Employee/Recruiter)
+                try:
+                    emp_data = EmployeeDataModel.objects.filter(employeeProfile=emp).first()
+                    if emp_data and emp_data.Designation:
+                        employee_data['designation'] = emp_data.Designation
+                        # Also include position name if available
+                        if emp_data.Position:
+                            employee_data['position'] = emp_data.Position.Name
+                            # Include department from Position
+                            if emp_data.Position.Department:
+                                employee_data['department'] = emp_data.Position.Department.Dep_Name
+                            else:
+                                employee_data['department'] = None
+                        else:
+                            employee_data['position'] = None
+                            employee_data['department'] = None
+                    else:
+                        employee_data['designation'] = None
+                        employee_data['position'] = None
+                        employee_data['department'] = None
+                except Exception as e:
+                    employee_data['designation'] = None
+                    employee_data['position'] = None
+                    employee_data['department'] = None
+                
+                employee_list.append(employee_data)
+            
+            return Response({
+                'count': len(employee_list),
+                'employees': employee_list
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class GenerateDASCodeView(APIView):
+    """
+    Generate temporary auth code for DAS auto-login
+    Called when user clicks "DAS" button in HRM frontend
+    """
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        try:
+            # Get logged-in user email
+            user_email = request.data.get('email')
+            
+            if not user_email:
+                return Response({
+                    'error': 'Email is required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Check if employee exists and is active
+            employee = EmployeeInformation.objects.filter(
+                email=user_email,
+                employee_status='active'
+            ).first()
+            
+            if not employee:
+                return Response({
+                    'error': 'Employee not found or inactive'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Generate auth code and create record
+            code = DASAuthCode.generate_code()
+            auth_code = DASAuthCode.objects.create(
+                code=code,
+                user_email=user_email,
+                employee_id=employee.employee_Id
+            )
+            
+            # Build DAS redirect URL
+            das_url = settings.DAS_URL if hasattr(settings, 'DAS_URL') else 'http://localhost:63105'
+            redirect_url = f"{das_url}?code={code}&email={user_email}"
+            
+            return Response({
+                'code': code,
+                'redirect_url': redirect_url,
+                'expires_in': 300  # 5 minutes
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ValidateDASCodeView(APIView):
+    """
+    Validate DAS auth code and return employee data
+    Called by DAS backend during auto-login process
+    """
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        try:
+            code = request.data.get('code')
+            email = request.data.get('email')
+            
+            if not code or not email:
+                return Response({
+                    'valid': False,
+                    'error': 'Code and email are required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Find the auth code
+            try:
+                auth_code = DASAuthCode.objects.get(code=code, user_email=email)
+            except DASAuthCode.DoesNotExist:
+                return Response({
+                    'valid': False,
+                    'error': 'Invalid code or email'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Check if code is still valid
+            if not auth_code.is_valid():
+                error_msg = 'Code has already been used' if auth_code.is_used else 'Code has expired'
+                return Response({
+                    'valid': False,
+                    'error': error_msg
+                }, status=status.HTTP_401_UNAUTHORIZED)
+            
+            # Get employee data
+            employee = EmployeeInformation.objects.filter(
+                email=email,
+                employee_status='active'
+            ).first()
+            
+            if not employee:
+                return Response({
+                    'valid': False,
+                    'error': 'Employee not found or inactive'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Get employee data model for designation
+            employee_data = EmployeeDataModel.objects.filter(
+                EmployeeId=employee.employee_Id
+            ).first()
+            
+            designation = employee_data.Designation if employee_data else None
+            
+            # Mark code as used
+            auth_code.mark_used()
+            
+            # Return employee data for DAS to create/update user
+            return Response({
+                'valid': True,
+                'employee': {
+                    'employee_Id': employee.employee_Id,
+                    'full_name': employee.full_name,
+                    'email': employee.email,
+                    'Employeement_Type': employee.Employeement_Type,
+                    'work_location': employee.work_location,
+                    'hired_date': employee.hired_date.isoformat() if employee.hired_date else None,
+                    'employee_status': employee.employee_status,
+                    'date_of_birth': employee.date_of_birth.isoformat() if employee.date_of_birth else None,
+                    'phone': employee.mobile,
+                    'designation': designation,
+                }
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({
+                'valid': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+#27/05/2026
+class LeadStageListView(APIView):
+    """
+    Returns the choices from NewDailyAchivesModel.interview_status dynamically.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        try:
+            choices = NewDailyAchivesModel._meta.get_field('interview_status').choices
+            # Map choice keys to display names and styling options
+            style_map = {
+                "joined": {"text_color": "text-green-600", "border_color": "border-green-500"},
+                "offer": {"text_color": "text-blue-600", "border_color": "border-blue-500"},
+                "interview_scheduled": {"text_color": "text-purple-600", "border_color": "border-purple-500"},
+                "walkin": {"text_color": "text-amber-600", "border_color": "border-amber-500"},
+                "rejected": {"text_color": "text-red-600", "border_color": "border-red-500"},
+                "Rejected_by_Candidate": {"text_color": "text-red-600", "border_color": "border-red-500"},
+                "call_notpicked": {"text_color": "text-slate-600", "border_color": "border-slate-400"},
+                "dis_connect": {"text_color": "text-slate-600", "border_color": "border-slate-400"},
+                "will_revert_back": {"text_color": "text-indigo-600", "border_color": "border-indigo-500"},
+                "to_client": {"text_color": "text-indigo-600", "border_color": "border-indigo-500"},
+            }
+            
+            data = []
+            for code, display_name in choices:
+                style = style_map.get(code, {"text_color": "text-indigo-600", "border_color": "border-indigo-500"})
+                data.append({
+                    "code": code,
+                    "display_name": display_name,
+                    "text_color": style["text_color"],
+                    "border_color": style["border_color"]
+                })
+            return Response(data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)

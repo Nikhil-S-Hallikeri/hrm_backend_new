@@ -194,8 +194,8 @@ EMAIL_PORT = 465
 EMAIL_USE_TLS = False
 
 
-
-DAS_URL = 'https://dasbackendapi.meridahr.com/'
+DAS_URL = 'https://das.meridahr.com/'
+# DAS_URL = 'http://192.168.18.29:63105/'
 
 
 # set the celery broker url

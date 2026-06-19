@@ -48,7 +48,34 @@ class ClientsDocumentsModel(models.Model):
         super(ClientsDocumentsModel,self).save(*args,**kwargs)
 
 # Requirement Model
+# Old Requirement Model (preserved for reference)
+# class Requirement(models.Model):
+#     client = models.ForeignKey(OurClients, on_delete=models.CASCADE)
+#     job_title = models.CharField(max_length=255,blank=True, null=True)
+#     job_description = models.TextField(blank=True, null=True)
+#     open_positions = models.IntegerField(default=0,blank=True, null=True)
+#     hiring_start_date = models.DateField(blank=True, null=True)
+#     hiring_end_date = models.DateField(blank=True, null=True)
+#     package_min = models.DecimalField(max_digits=10, decimal_places=2,blank=True, null=True)
+#     package_max = models.DecimalField(max_digits=10, decimal_places=2,blank=True, null=True)
+#     experience_min = models.IntegerField(blank=True, null=True)
+#     experience_max = models.IntegerField(blank=True, null=True)
+#     required_skills = models.TextField(blank=True, null=True)
+#     qualification = models.TextField(blank=True, null=True)
+#     job_location = models.CharField(max_length=255,blank=True, null=True)
+#     added_on=models.DateTimeField(default=timezone.localtime)
+#     added_by=models.CharField(max_length=100,blank=True,null=True)
+#     def __str__(self):
+#         return self.job_title
+
 class Requirement(models.Model):
+    #18/03/2026
+    # --- Billing Model Choices ---
+    BILLING_MODEL_CHOICES = [
+        ("one_time", "One-Time"),
+        ("monthly", "Monthly Recurring"),
+    ]
+
     client = models.ForeignKey(OurClients, on_delete=models.CASCADE)
     job_title = models.CharField(max_length=255,blank=True, null=True)
     job_description = models.TextField(blank=True, null=True)
@@ -64,9 +91,138 @@ class Requirement(models.Model):
     job_location = models.CharField(max_length=255,blank=True, null=True)
     added_on=models.DateTimeField(default=timezone.localtime)
     added_by=models.CharField(max_length=100,blank=True,null=True)
-    
+
+    #18/03/2026
+    # --- Phase 2: Billing Fields ---
+    billing_model = models.CharField(
+        max_length=20,
+        choices=BILLING_MODEL_CHOICES,
+        blank=True, null=True,
+        help_text="Billing model for this requirement: one-time or monthly recurring"
+    )
+    billing_amount = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        blank=True, null=True,
+        help_text="Agreed billing amount for this requirement"
+    )
+
+    #20/04/2026
+    # Dynamic status tracking
+    REQ_STATUS_CHOICES = [
+        ("open", "Open"),
+        ("closed", "Closed"),
+    ]
+    requirement_status = models.CharField(
+        max_length=20, 
+        choices=REQ_STATUS_CHOICES, 
+        default="open",
+        help_text="Status of the requirement"
+    )
+
+
     def __str__(self):
-        return self.job_title
+        return self.job_title if self.job_title else f"Requirement #{self.pk}"
+
+
+# --- Phase 2: ClientBillingCycle Model ---
+# Tracks each billing cycle event for monthly recurring placements.
+# One record is created per month for each active joined candidate.
+class ClientBillingCycle(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("partial", "Partially Paid"),
+        ("paid", "Paid"),
+        ("overdue", "Overdue"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    # Link to the joining record (which has candidate + requirement info)
+    joining_details = models.ForeignKey(
+        'HRM_App.ClientCandidateJoiningHistory',
+        on_delete=models.CASCADE,
+        related_name='billing_cycles',
+        help_text="The candidate joining record this billing cycle belongs to"
+    )
+    cycle_month = models.PositiveIntegerField(
+        help_text="Billing cycle number (1 = first month, 2 = second month, etc.)"
+    )
+    billing_amount = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        help_text="Amount to be billed for this cycle"
+    )
+    due_date = models.DateField(
+        blank=True, null=True,
+        help_text="Date by which payment is due"
+    )
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES,
+        default="pending"
+    )
+    payment_date = models.DateField(
+        blank=True, null=True,
+        help_text="Date when payment was actually received"
+    )
+    payment_reference = models.CharField(
+        max_length=255, blank=True, null=True,
+        help_text="Transaction ID, cheque number, or any payment reference"
+    )
+    remarks = models.TextField(blank=True, null=True)
+    #1/04/2026
+    # Partial payment tracking (Money IN from Client)
+    paid_amount = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        default=0,
+        help_text="Total amount paid so far (supports partial payments)"
+    )
+
+    # --- Phase 2: Candidate Payout Tracking (Money OUT to Candidate) ---
+    candidate_payout_amount = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        default=0,
+        help_text="Salary amount due to candidate (includes taxes/PF)"
+    )
+    candidate_paid_amount = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        default=0,
+        help_text="Actual salary amount paid to candidate so far"
+    )
+    PAYOUT_STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("partial", "Partially Paid"),
+        ("paid", "Paid"),
+    ]
+    payout_status = models.CharField(
+        max_length=20, choices=PAYOUT_STATUS_CHOICES,
+        default="pending"
+    )
+    payout_date = models.DateField(
+        blank=True, null=True,
+        help_text="Date when salary was paid to candidate"
+    )
+    payout_reference = models.CharField(
+        max_length=255, blank=True, null=True,
+        help_text="Salary transaction reference/UTR number"
+    )
+    # -------------------------------------------------------------------
+
+    created_on = models.DateTimeField(default=timezone.localtime)
+
+    @property
+    def net_profit(self):
+        """Profit margin for this cycle: Billed Amount - Candidate Salary."""
+        return self.billing_amount - self.candidate_payout_amount
+
+    @property
+    def balance_amount(self):
+        """Remaining unpaid balance for this cycle."""
+        return self.billing_amount - self.paid_amount
+
+    class Meta:
+        unique_together = ('joining_details', 'cycle_month')
+        ordering = ['cycle_month']
+
+    def __str__(self):
+        return f"Billing Cycle #{self.cycle_month} - {self.joining_details}"
 
 # Requirement Assign Model
 

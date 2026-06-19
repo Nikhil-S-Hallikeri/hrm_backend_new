@@ -695,7 +695,15 @@ class UpdateEmployeeAttendanceAPIView(APIView):
             }
             return Response(response_data, status=status.HTTP_200_OK)
         else:
-            return Response({"error": "Record not found"}, status=status.HTTP_404_NOT_FOUND)
+            # return Response({"error": "Record not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({
+                "id": None,
+                "current_punch": None,
+                "InTime": None,
+                "OutTime": None,
+                "Status": None,
+                "message": "Record not found"
+            }, status=status.HTTP_200_OK)
     
     def patch(self,request):
         att_id=request.GET.get("id")

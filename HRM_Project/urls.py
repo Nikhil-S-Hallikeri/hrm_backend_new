@@ -22,16 +22,25 @@ from django.conf import settings
 from django.conf.urls.static import static
 from LMS_App.views import Job_Description_View
 
+from django.contrib import admin
+from django.urls import path, include
+from django.conf import settings
+from django.conf.urls.static import static
+from LMS_App.views import Job_Description_View
+
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path("root/",include('HRM_App.urls')),
-    path("root/ems/",include('EMS_App.urls')),
-    path("root/lms/",include('LMS_App.urls')),
-    path("root/pms/",include('payroll_app.urls')),
-    path("root/cms/",include('Contract_Emp_App.urls')),
+    path("root/", include('HRM_App.urls')),
+    path("root/ems/", include('EMS_App.urls')),
+    path("root/lms/", include('LMS_App.urls')),
+    path("root/pms/", include('payroll_app.urls')),
+    path("root/cms/", include('Contract_Emp_App.urls')),
     path('api/job_description/', Job_Description_View.as_view(), name='job_description'),
-    #6/01/2026
-    # path('api/job_description/<int:pk>/', Job_Description_View.as_view(), name='job_description_detail'),
     path('api/job_description/<str:pk>/', Job_Description_View.as_view(), name='job_description_detail'),
+
+    # ── WhatsApp Module (NEW) ─────────────────────────────────────────────────
+    path('api/wa/', include('whatsapp_app.urls')),
+    path('api/chatbot/', include('chatbot_app.urls')),
+    # ─────────────────────────────────────────────────────────────────────────
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 

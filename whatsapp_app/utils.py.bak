@@ -1,0 +1,1536 @@
+from django.core.mail import send_mail
+from django.conf import settings
+from whatsapp.models import OTPVerification, Message
+from django.utils import timezone
+import random
+import re
+import requests
+import time
+
+
+def extract_provider_message_id(response_data, fallback=None):
+    """Return the provider message id from common Flask/Meta response shapes."""
+    provider_id = None
+    if isinstance(response_data, dict):
+        provider_id = (
+            response_data.get('provider_message_id')
+            or response_data.get('message_id')
+            or response_data.get('id')
+        )
+        if not provider_id and isinstance(response_data.get('data'), dict):
+            inner_data = response_data.get('data')
+            provider_id = (
+                inner_data.get('provider_message_id')
+                or inner_data.get('message_id')
+                or inner_data.get('id')
+            )
+        if (
+            not provider_id
+            and isinstance(response_data.get('messages'), list)
+            and response_data['messages']
+        ):
+            provider_id = response_data['messages'][0].get('id')
+
+    return provider_id or fallback
+
+
+def extract_media_url_from_components(components):
+    """Find a header media link in WhatsApp template components."""
+    for component in components or []:
+        if str(component.get('type', '')).lower() != 'header':
+            continue
+        for parameter in component.get('parameters', []) or []:
+            param_type = str(parameter.get('type', '')).lower()
+            if param_type in {'image', 'video', 'document'}:
+                media_data = parameter.get(param_type) or {}
+                if isinstance(media_data, dict) and media_data.get('link'):
+                    return media_data.get('link')
+    return None
+
+
+def generate_otp():
+    """Generate a 6-digit OTP"""
+    return str(random.randint(100000, 999999))
+
+
+def create_otp_record(email, otp_type, user_data=None):
+    # Generate OTP
+    otp = generate_otp()
+    
+    # Delete any previous OTP for this email and type
+    OTPVerification.objects.filter(
+        email=email,
+        otp_type=otp_type
+    ).delete()
+    
+    # Create new OTP record
+    otp_record = OTPVerification.objects.create(
+        email=email,
+        otp=otp,
+        otp_type=otp_type,
+        user_data=user_data
+    )
+    
+    return otp_record
+
+
+def send_signup_otp_to_admin(email, role, otp):
+    """
+    Send signup OTP to admin email
+    
+    Args:
+        email: User's email
+        role: User's role
+        otp: The generated OTP
+    
+    Returns:
+        Boolean indicating success
+    """
+    try:
+        send_mail(
+            subject='New Signup Request',
+            message=f"""
+            New signup request received:
+            
+            Email: {email}
+            Role: {role}
+            
+            OTP for approval: {otp}
+            
+            This OTP will expire in 10 minutes.
+            """,
+            from_email=settings.EMAIL_HOST_USER,
+            recipient_list=[settings.ADMIN_EMAIL],
+            fail_silently=False,
+        )
+        return True
+    except Exception as e:
+        print(f"--- FAILED TO SEND ADMIN OTP EMAIL ---")
+        print(f"Error: {str(e)}")
+        print(f"OTP for admin is: {otp}")
+        print(f"--------------------------------------")
+        return False
+
+
+def send_signup_otp_to_user(email, otp):
+    """
+    Send signup OTP to user's email
+    
+    Args:
+        email: User's email
+        otp: The generated OTP
+    
+    Returns:
+        Boolean indicating success
+    """
+    try:
+        subject = '🔐 Your Signup OTP - Merida Tech Minds'
+        html_message = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <div style="max-width: 500px; margin: 0 auto; padding: 20px;">
+                    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px 10px 0 0; text-align: center;">
+                        <h1 style="color: white; margin: 0;">Merida Tech Minds</h1>
+                    </div>
+                    <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #ddd;">
+                        <h2 style="color: #667eea;">Welcome to Merida Tech Minds!</h2>
+                        <p>Thank you for signing up. To complete your registration, please use the following OTP:</p>
+                        
+                        <div style="background: white; border: 2px solid #667eea; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
+                            <p style="font-size: 32px; font-weight: bold; color: #667eea; letter-spacing: 5px; margin: 0;">{otp}</p>
+                        </div>
+                        
+                        <p style="color: #666; font-size: 14px;"><strong>⏱️ Valid for:</strong> 10 minutes</p>
+                        
+                        <p style="margin-top: 30px; color: #666; font-size: 13px;">
+                            If you didn't request this signup, please ignore this email or contact our support team.
+                        </p>
+                        
+                        <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
+                        <p style="color: #999; font-size: 12px; text-align: center;">
+                            © 2026 Merida Tech Minds. All rights reserved.<br>
+                            Do not share this OTP with anyone.
+                        </p>
+                    </div>
+                </div>
+            </body>
+        </html>
+        """
+        send_mail(
+            subject=subject,
+            message=f'Your signup OTP is: {otp}\n\nValid for 10 minutes.',
+            from_email=settings.EMAIL_HOST_USER,
+            recipient_list=[email],
+            fail_silently=False,
+            html_message=html_message,
+        )
+        return True
+    except Exception as e:
+        print(f"--- FAILED TO SEND USER OTP EMAIL ---")
+        print(f"Error: {str(e)}")
+        print(f"OTP for {email} is: {otp}")
+        print(f"-------------------------------------")
+        return False
+
+
+def send_account_approval_email(email):
+    """
+    Send account approval confirmation to user
+    
+    Args:
+        email: User's email
+    
+    Returns:
+        Boolean indicating success
+    """
+    try:
+        send_mail(
+            subject='Account Approved',
+            message=f"""
+            Dear User,
+            
+            Your account has been approved by the admin.
+            You can now login with your email and password.
+            
+            Email: {email}
+            
+            Welcome to our platform!
+            """,
+            from_email=settings.EMAIL_HOST_USER,
+            recipient_list=[email],
+            fail_silently=False,
+        )
+        return True
+    except Exception as e:
+        print(f"Failed to send confirmation email: {e}")
+        return False
+
+
+def send_password_reset_otp(email, otp):
+    """
+    Send password reset OTP to user's email
+    
+    Args:
+        email: User's email
+        otp: The generated OTP
+    
+    Returns:
+        Boolean indicating success
+    """
+    try:
+        subject = '🔑 Password Reset OTP - Merida Tech Minds'
+        html_message = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <div style="max-width: 500px; margin: 0 auto; padding: 20px;">
+                    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px 10px 0 0; text-align: center;">
+                        <h1 style="color: white; margin: 0;">Merida Tech Minds</h1>
+                    </div>
+                    <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #ddd;">
+                        <h2 style="color: #667eea;">Password Reset Request</h2>
+                        <p>We received a request to reset your password. If this was you, use the following OTP to proceed:</p>
+                        
+                        <div style="background: white; border: 2px solid #667eea; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
+                            <p style="font-size: 32px; font-weight: bold; color: #667eea; letter-spacing: 5px; margin: 0;">{otp}</p>
+                        </div>
+                        
+                        <p style="color: #666; font-size: 14px;"><strong>⏱️ Valid for:</strong> 10 minutes</p>
+                        
+                        <p style="margin-top: 30px; color: #666; font-size: 13px;">
+                            <strong>⚠️ Security Notice:</strong> If you didn't request this, your account may be at risk. 
+                            Please change your password immediately and contact our support team.
+                        </p>
+                        
+                        <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
+                        <p style="color: #999; font-size: 12px; text-align: center;">
+                            © 2026 Merida Tech Minds. All rights reserved.<br>
+                            Never share your OTP with anyone.
+                        </p>
+                    </div>
+                </div>
+            </body>
+        </html>
+        """
+        send_mail(
+            subject=subject,
+            message=f'Your password reset OTP is: {otp}\n\nValid for 10 minutes. Do not share this with anyone.',
+            from_email=settings.EMAIL_HOST_USER,
+            recipient_list=[email],
+            fail_silently=False,
+            html_message=html_message,
+        )
+        return True
+    except Exception as e:
+        raise Exception(f"Failed to send password reset OTP email: {str(e)}")
+
+
+def send_password_reset_confirmation(email):
+    """
+    Send password reset confirmation to user
+    
+    Args:
+        email: User's email
+    
+    Returns:
+        Boolean indicating success
+    """
+    try:
+        send_mail(
+            subject='Password Reset Successful',
+            message=f"""
+            Your password has been reset successfully.
+            
+            You can now login with your new password.
+            
+            If you didn't make this change, please contact support immediately.
+            """,
+            from_email=settings.EMAIL_HOST_USER,
+            recipient_list=[email],
+            fail_silently=False,
+        )
+        return True
+    except Exception as e:
+        print(f"Failed to send confirmation email: {e}")
+        return False
+
+
+def verify_otp(email, otp, otp_type):
+    """
+    Verify OTP and return the OTP record if valid
+    
+    Args:
+        email: User's email
+        otp: The OTP to verify
+        otp_type: 'signup' or 'forgot_password'
+    
+    Returns:
+        OTPVerification object if valid, None otherwise
+    """
+    try:
+        otp_record = OTPVerification.objects.get(
+            email=email,
+            otp=otp,
+            otp_type=otp_type,
+            is_verified=False
+        )
+        
+        if otp_record.is_valid():
+            return otp_record
+        else:
+            return None
+            
+    except OTPVerification.DoesNotExist:
+        return None
+
+
+def extract_variables(text):
+    """Extract unique placeholder indices from text, e.g. {{1}}, {{2}} -> ["1", "2"]."""
+    return sorted(set(re.findall(r"\{\{(\d+)\}\}", text or "")), key=int)
+
+
+def validate_sequential_variables(variables):
+    """Ensure placeholders start from 1 and are continuous with no gaps."""
+    if not variables:
+        return True
+
+    expected = [str(i) for i in range(1, len(variables) + 1)]
+    return variables == expected
+
+
+def render_template(template_body, variables):
+    for key, value in variables.items():
+        template_body = template_body.replace(f"{{{{{key}}}}}", value)
+    return template_body
+
+def render_template_body(body, values):
+    """Render a template body by replacing placeholders with supplied variable values."""
+    values = values or {}
+    required = extract_variables(body)
+
+    provided_keys = sorted(values.keys(), key=lambda item: int(item)) if values else []
+    if provided_keys != required:
+        raise ValueError("Provided variables do not match required placeholders.")
+
+    rendered = body or ""
+    for var_key in required:
+        rendered = rendered.replace("{{" + var_key + "}}", str(values[var_key]))
+    return rendered
+
+
+def execute_campaign(campaign):
+    """Execute campaign delivery and update campaign delivery metrics."""
+    now = timezone.now()
+    campaign.status = 'RUNNING'
+    campaign.started_at = now
+
+    contacts = list(campaign.contacts.all())
+    campaign.total_contacts = len(contacts)
+    
+    # Save RUNNING status immediately so frontend sees it
+    campaign.save(
+        update_fields=[
+            'status', 'started_at', 'total_contacts',
+        ]
+    )
+
+    sent_count = 0
+    sent_messages = []
+    contacts_to_update = []
+    failed_count = 0
+
+
+    if not campaign.template:
+        campaign.status = 'FAILED'
+        campaign.completed_at = now
+        campaign.total_contacts = len(contacts)
+        campaign.total_sent = campaign.total_sent or 0
+        campaign.total_failed = (campaign.total_failed or 0) + len(contacts)
+        campaign.save(
+            update_fields=[
+                'status', 'started_at', 'completed_at',
+                'total_contacts', 'total_sent', 'total_failed',
+            ]
+        )
+        return {
+            'total_sent': campaign.total_sent,
+            'total_failed': campaign.total_failed,
+            'status': campaign.status,
+            'messages': [],
+        }
+
+    # Resolve waba_config early
+    waba_config = get_whatsapp_config(campaign.whatsapp_config_id if campaign.whatsapp_config else None)
+
+    # Pre-flight upload for template media
+    pre_uploaded_media_id = None
+    header_media_url = None
+    if campaign.template and campaign.template.header_type in ['IMAGE', 'VIDEO', 'DOCUMENT']:
+        # Priority 1: media_id pre-uploaded during launch via direct byte stream (solves local URL issues)
+        pre_uploaded_media_id = campaign.variables.get('__header_media_id__') if campaign.variables else None
+        
+        header_media_url = campaign.variables.get('__header_media_url__') if campaign.variables else None
+        if not header_media_url:
+            # Check if header_media is a saved Meta media ID (numeric string from a previous upload)
+            # If so, use it directly without re-uploading
+            hm = campaign.template.header_media
+            if hm and str(hm).strip().isdigit():
+                pre_uploaded_media_id = str(hm).strip()
+                header_media_url = None  # Already have media_id, no URL needed
+            else:
+                # Prefer meta_media_url (actual HTTP URL on Meta CDN) over base64 uploaded_preview_image
+                # which can be very large and cause timeouts when re-uploading on every send
+                header_media_url = (
+                    campaign.template.meta_media_url
+                    or campaign.template.header_media
+                    or campaign.template.uploaded_preview_image
+                )
+                if not header_media_url and campaign.template.sample_values:
+                    header_media_url = (
+                        campaign.template.sample_values.get('header_handle')
+                        or campaign.template.sample_values.get('media_url')
+                    )
+                if isinstance(header_media_url, list) and len(header_media_url) > 0:
+                    header_media_url = header_media_url[0]
+
+        # Make relative URLs absolute or read directly from disk if local
+        if header_media_url and header_media_url.startswith('/'):
+            # It's a local file, try to read from disk directly to avoid network loopback issues
+            if header_media_url.startswith('/media/'):
+                from django.conf import settings
+                import os
+                
+                # Extract path after /media/
+                relative_path = header_media_url[len('/media/'):]
+                file_path = os.path.join(settings.MEDIA_ROOT or '', relative_path)
+                
+                if os.path.exists(file_path):
+                    try:
+                        from whatsapp.services import upload_media_for_message
+                        import mimetypes
+                        
+                        mime_type, _ = mimetypes.guess_type(file_path)
+                        mime_type = mime_type or 'application/octet-stream'
+                        file_name = os.path.basename(file_path)
+                        
+                        with open(file_path, 'rb') as f:
+                            file_bytes = f.read()
+                            
+                        pre_uploaded_media_id = upload_media_for_message(file_bytes, file_name, mime_type, waba_config)
+                        print(f"Pre-flight campaign local upload successful. Media ID: {pre_uploaded_media_id}")
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).error(f"Campaign pre-flight local media upload failed: {e}")
+                        campaign.status = 'FAILED'
+            
+            # If still not uploaded (e.g. not a /media/ path or file missing), fallback to absolute URL
+            if not pre_uploaded_media_id:
+                from django.conf import settings
+                domain = getattr(settings, 'SITE_URL', 'http://127.0.0.1:8000').rstrip('/')
+                header_media_url = f"{domain}{header_media_url}"
+
+        # Handle Data URLs (base64)
+        if header_media_url and header_media_url.startswith('data:') and not pre_uploaded_media_id:
+            try:
+                import base64
+                from whatsapp.services import upload_media_for_message
+
+                meta_info, b64_data = header_media_url.split(',', 1)
+                mime_type = 'image/jpeg'
+                if ':' in meta_info and ';' in meta_info:
+                    mime_type = meta_info.split(':', 1)[1].split(';', 1)[0]
+
+                ext_map = {
+                    "image/jpeg": "jpg",
+                    "image/png": "png",
+                    "image/gif": "gif",
+                    "image/webp": "webp",
+                    "video/mp4": "mp4",
+                    "application/pdf": "pdf",
+                }
+                file_name = f"template_header.{ext_map.get(mime_type, 'bin')}"
+                file_bytes = base64.b64decode(b64_data)
+
+                pre_uploaded_media_id = upload_media_for_message(
+                    file_bytes,
+                    file_name,
+                    mime_type,
+                    waba_config,
+                )
+                print(f"Pre-flight campaign base64 upload successful. Media ID: {pre_uploaded_media_id}")
+                # Save the media ID back to the template so future sends don't re-upload
+                if pre_uploaded_media_id and campaign.template:
+                    try:
+                        campaign.template.header_media = pre_uploaded_media_id
+                        campaign.template.save(update_fields=['header_media'])
+                        print(f"Saved media_id {pre_uploaded_media_id} to template {campaign.template.id} header_media for future reuse")
+                    except Exception as save_err:
+                        import logging
+                        logging.getLogger(__name__).warning(f"Could not save media_id to template: {save_err}")
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Campaign pre-flight base64 media upload failed: {e}")
+                campaign.status = 'FAILED'
+
+        # Only attempt URL-based upload if we don't already have a media_id
+        if header_media_url and not pre_uploaded_media_id and not header_media_url.startswith('data:'):
+            try:
+                from whatsapp.services import upload_template_media_for_sending
+                print(f"Pre-flight uploading campaign template media: {header_media_url}")
+                pre_uploaded_media_id = upload_template_media_for_sending(header_media_url, waba_config)
+                print(f"Pre-flight campaign upload successful. Media ID: {pre_uploaded_media_id}")
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Campaign pre-flight media upload failed: {e}")
+                campaign.status = 'FAILED'
+                campaign.completed_at = timezone.now()
+                campaign.total_contacts = len(contacts)
+                campaign.total_sent = campaign.total_sent or 0
+                campaign.total_failed = (campaign.total_failed or 0) + len(contacts)
+                campaign.save(
+                    update_fields=[
+                        'status', 'completed_at',
+                        'total_contacts', 'total_sent', 'total_failed',
+                    ]
+                )
+                return {
+                    'total_sent': campaign.total_sent,
+                    'total_failed': campaign.total_failed,
+                    'status': campaign.status,
+                    'messages': [],
+                }
+
+    for contact in contacts:
+        # Check if campaign was stopped mid-execution
+        campaign.refresh_from_db()
+        if campaign.status == 'COMPLETED':
+            break
+            
+        # Avoid duplicate sends if contact has already been messaged in this campaign
+        from whatsapp.models import Message
+        if Message.objects.filter(contact=contact, campaign=campaign).exists():
+            continue
+            
+        try:
+            # Resolve message text robustly for campaign delivery
+            template_body = campaign.template.body if (campaign.template and campaign.template.body) else ""
+            
+            # If body is empty but we have a template name, use that as a base
+            if not template_body and campaign.template:
+                template_body = campaign.template.name
+
+            parsed_message = render_template(template_body, campaign.variables or {})
+            
+            # Final fallback if rendering resulted in empty string
+            if not parsed_message and campaign.template:
+                parsed_message = campaign.template.name
+
+            # _normalize_phone_number already handles 10-digit -> 91XXXXXXXXXX conversion
+            phone = _normalize_phone_number(contact.phone_number)
+            
+            payload = {
+                "phone": phone,
+                "template_name": campaign.template.name,
+                "language_code": campaign.template.language or "en_US",
+                "campaign_id": campaign.id,
+                "contact_id": contact.id,
+            }
+            
+            # Always build components dict (even for templates with no user variables)
+            # so header media and url buttons are always included when applicable
+            variables_dict = campaign.variables or {}
+            components = []
+
+            # Extract url_buttons from stored variables
+            url_buttons = variables_dict.get('__url_buttons__', {})
+
+            # 1. Header Media component
+            if campaign.template.header_type in ['IMAGE', 'VIDEO', 'DOCUMENT']:
+                header_type = campaign.template.header_type.lower()
+                if pre_uploaded_media_id:
+                    media_obj = {"id": pre_uploaded_media_id}
+                    if header_type == 'document':
+                        media_obj["filename"] = variables_dict.get('__header_filename__') or 'document.pdf'
+                    components.append({
+                        "type": "header",
+                        "parameters": [
+                            {
+                                "type": header_type,
+                                header_type: media_obj
+                            }
+                        ]
+                    })
+                elif header_media_url:
+                    components.append({
+                        "type": "header",
+                        "parameters": [
+                            {
+                                "type": header_type,
+                                header_type: {"link": header_media_url}
+                            }
+                        ]
+                    })
+
+            # 2. Body variable components (filter out internal __ and _ prefixed keys)
+            body_keys = [
+                k for k in variables_dict.keys()
+                if not str(k).startswith('__') and not str(k).startswith('_')
+            ]
+            if body_keys:
+                components.append({
+                    "type": "body",
+                    "parameters": [
+                        {"type": "text", "text": str(variables_dict[key])}
+                        for key in sorted(body_keys, key=lambda v: int(v) if str(v).isdigit() else v)
+                    ]
+                })
+
+            # 3. URL Button components
+            if url_buttons and isinstance(url_buttons, dict):
+                template_buttons = campaign.template.buttons or []
+                for btn_idx, btn in enumerate(template_buttons):
+                    if btn.get('type') in ('URL', 'url') and btn.get('text') in url_buttons:
+                        url_val = url_buttons[btn.get('text')]
+                        components.append({
+                            "type": "button",
+                            "sub_type": "url",
+                            "index": str(btn_idx),
+                            "parameters": [
+                                {"type": "text", "text": str(url_val)}
+                            ]
+                        })
+
+            # Only attach components to payload if there are any
+            if components:
+                payload["components"] = components
+
+            import uuid
+            generated_provider_message_id = str(uuid.uuid4())
+            media_url = header_media_url
+            template_buttons = campaign.template.buttons or []
+            
+            from whatsapp.services import send_whatsapp_message_direct_to_meta
+            
+            try:
+                meta_response, status_code = send_whatsapp_message_direct_to_meta(
+                    recipient_id=phone,
+                    waba_config=waba_config,
+                    text=parsed_message,
+                    template_name=campaign.template.name,
+                    language_code=campaign.template.language or "en_US",
+                    components=components,
+                    media_url=media_url,
+                    media_type='image' if media_url else None
+                )
+                
+                if status_code not in [200, 201]:
+                    print(f"Meta Request Failed ({status_code}): {meta_response}")
+                    failed_count += 1
+                    continue
+                
+                res_data = meta_response if isinstance(meta_response, dict) else {}
+            except Exception as req_err:
+                print(f"Meta Request Failed: {str(req_err)}")
+                failed_count += 1
+                continue
+
+            provider_id = extract_provider_message_id(res_data, fallback=generated_provider_message_id)
+
+            msg = Message(
+                contact=contact,
+                campaign=campaign,
+                text=parsed_message,
+                sender='agent',
+                direction='OUTGOING',
+                status='Sent',
+                type='template',
+                provider_message_id=provider_id,
+                media_url=media_url,
+                buttons=template_buttons,
+                timestamp=now,
+            )
+            msg.save()
+            sent_messages.append({
+                'id': msg.id,
+                'contact_id': contact.id,
+                'phone': contact.phone_number,
+                'provider_message_id': msg.provider_message_id,
+                'media_url': msg.media_url,
+                'buttons': msg.buttons,
+            })
+            contact.last_message = parsed_message
+            contact.last_message_time = now
+            contacts_to_update.append(contact)
+            sent_count += 1
+        except Exception as contact_err:
+            import traceback
+            import logging as _logging
+            _logging.getLogger(__name__).error(
+                f"Campaign {campaign.id} failed for contact {contact.phone_number}: {contact_err}\n{traceback.format_exc()}"
+            )
+            failed_count += 1
+
+    if contacts_to_update:
+        contact_model = contacts_to_update[0].__class__
+        contact_model.objects.bulk_update(contacts_to_update, ['last_message', 'last_message_time'])
+
+    campaign.total_sent = (campaign.total_sent or 0) + sent_count
+    campaign.total_failed = (campaign.total_failed or 0) + failed_count
+    
+    # Re-check status — if it was stopped (COMPLETED) mid-loop, keep it
+    current_status = campaign.__class__.objects.filter(pk=campaign.pk).values_list('status', flat=True).first()
+    if current_status == 'COMPLETED':
+        campaign.status = 'COMPLETED'
+    else:
+        # Keep as RUNNING — user must explicitly stop or it stays running
+        campaign.status = 'RUNNING'
+    
+    campaign.save(
+        update_fields=[
+            'status', 'started_at',
+            'total_contacts', 'total_sent', 'total_failed',
+        ]
+    )
+
+    return {
+        'total_sent': campaign.total_sent,
+        'total_failed': campaign.total_failed,
+        'status': campaign.status,
+        'messages': sent_messages,
+    }
+
+def _normalize_phone_number(phone_number):
+    """Normalize phone number by removing all non-digit characters and prepending 91 if 10 digits."""
+    phone = re.sub(r'\D', '', str(phone_number or ''))
+    if len(phone) == 10:
+        phone = f"91{phone}"
+    elif phone.startswith('0') and len(phone) == 11:
+        phone = f"91{phone[1:]}"
+    return phone
+
+
+def _serialize_event_payload(event_type, contact=None, message=None, extra=None):
+    from whatsapp.serializers import ContactSerializer, MessageSerializer
+    payload = {'event': event_type}
+
+    if contact is not None:
+        payload['contact'] = ContactSerializer(contact).data if hasattr(contact, '_meta') else contact
+
+    if message is not None:
+        payload['message'] = MessageSerializer(message).data if hasattr(message, '_meta') else message
+
+    if extra:
+        payload.update(extra)
+
+    return payload
+
+
+def _send_crm_webhook_async(webhook_url, payload, api_token):
+    import threading
+    import requests
+    def worker():
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_token}"
+            }
+            response = requests.post(webhook_url, json=payload, headers=headers, timeout=5)
+            if response.status_code >= 400 and 'localhost:9956' not in webhook_url and '127.0.0.1:9956' not in webhook_url:
+                raise requests.exceptions.RequestException(f"Status {response.status_code}")
+            try:
+                with open('webhook_debug.log', 'a') as f_log:
+                    f_log.write(f"\n[WEBHOOK PUSH] Sent to {webhook_url}, Status: {response.status_code}\n")
+            except:
+                pass
+        except Exception as e:
+            try:
+                with open('webhook_debug.log', 'a') as f_log:
+                    f_log.write(f"\n[WEBHOOK ERROR] Failed to send webhook to {webhook_url}: {str(e)}\n")
+            except:
+                pass
+            
+            # Auto-fallback to local CRM backend on port 9956 if the primary external webhook fails
+            local_fallback = 'http://localhost:9956/api/whatsapp/events'
+            if webhook_url != local_fallback and 'localhost:9956' not in webhook_url and '127.0.0.1:9956' not in webhook_url:
+                try:
+                    with open('webhook_debug.log', 'a') as f_log:
+                        f_log.write(f"[WEBHOOK FALLBACK] Retrying locally with {local_fallback}...\n")
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_token}"
+                    }
+                    response = requests.post(local_fallback, json=payload, headers=headers, timeout=5)
+                    with open('webhook_debug.log', 'a') as f_log:
+                        f_log.write(f"[WEBHOOK FALLBACK SUCCESS] Sent to {local_fallback}, Status: {response.status_code}\n")
+                except Exception as fallback_err:
+                    try:
+                        with open('webhook_debug.log', 'a') as f_log:
+                            f_log.write(f"[WEBHOOK FALLBACK ERROR] Local fallback failed: {str(fallback_err)}\n")
+                    except:
+                        pass
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _broadcast_crm_event(event_type, contact=None, message=None, extra=None, phone_number=None):
+    from channels.layers import get_channel_layer
+    from asgiref.sync import async_to_sync
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        return
+
+    payload = _serialize_event_payload(event_type, contact=contact, message=message, extra=extra)
+    groups = {'crm_updates'}
+
+    # Forward to Node/Express CRM Webhook (Disabled as requested to disconnect local CRM backend port 9956)
+    # try:
+    #     config_id = contact.whatsapp_config_id if (contact and hasattr(contact, 'whatsapp_config_id')) else None
+    #     config = get_whatsapp_config(config_id)
+    #     webhook_url = config.get('crm_webhook_url')
+    #     config_obj = config.get('config_obj')
+    #     crm_api_token = config_obj.crm_api_token if config_obj else 'super_secret_crm_token_123'
+    #     
+    #     # Default fallback to Node/Express running on port 9956
+    #     if (not webhook_url or 
+    #         'localhost:8000' in webhook_url or 
+    #         '127.0.0.1:8000' in webhook_url or 
+    #         'localhost:9003' in webhook_url or 
+    #         '127.0.0.1:9003' in webhook_url):
+    #         webhook_url = 'http://localhost:9956/api/whatsapp/events'
+    #         
+    #     if webhook_url:
+    #         _send_crm_webhook_async(webhook_url, payload, crm_api_token)
+    # except Exception as e:
+    #     try:
+    #         with open('webhook_debug.log', 'a') as f_log:
+    #             f_log.write(f"\n[WEBHOOK ERROR] Config resolution failed: {str(e)}\n")
+    #     except:
+    #         pass
+
+
+    if contact is not None:
+        groups.add(f'crm_contact_{contact.id}')
+        normalized_phone = _normalize_phone_number(contact.phone_number)
+        if normalized_phone:
+            groups.add(f'crm_chat_{normalized_phone}')
+    elif phone_number:
+        normalized_phone = _normalize_phone_number(phone_number)
+        if normalized_phone:
+            groups.add(f'crm_chat_{normalized_phone}')
+
+    # Debug logging
+    try:
+        with open('webhook_debug.log', 'a') as f_log:
+            f_log.write(f"\n[BROADCAST] {event_type} to groups {list(groups)}\n")
+    except:
+        pass
+
+    for group_name in groups:
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                'type': 'crm_event',
+                'message': payload
+            }
+        )
+
+
+
+PUBLIC_API_USER_EMAIL = 'public-api@example.local'
+
+
+def get_public_api_user():
+    """Get or create a default user for public API operations."""
+    from whatsapp.models import User
+    user = User.objects.filter(email=PUBLIC_API_USER_EMAIL).first()
+    if user:
+        return user
+
+    user = User.objects.filter(role='ADMIN').order_by('id').first()
+    if user:
+        return user
+
+    user = User.objects.order_by('id').first()
+    if user:
+        return user
+
+    return User.objects.create_user(
+        email=PUBLIC_API_USER_EMAIL,
+        password=None,
+        role='ADMIN',
+    )
+
+
+def get_whatsapp_config(config_id=None):
+    """
+    Fetches the active WhatsAppConfig record from the database singleton or specified ID.
+    Falls back gracefully to django.conf.settings if database values are missing.
+    """
+    from whatsapp.models import WhatsAppConfig
+    from django.conf import settings
+    from whatsapp.middleware import get_current_request_config_id
+    
+    if config_id is None:
+        config_id = get_current_request_config_id()
+    
+    if config_id:
+        try:
+            config = WhatsAppConfig.objects.get(id=config_id)
+        except (WhatsAppConfig.DoesNotExist, ValueError):
+            config = WhatsAppConfig.get_solo()
+    else:
+        config = WhatsAppConfig.get_solo()
+    
+    flask_url = getattr(settings, 'FLASK_SERVER_URL', 'http://127.0.0.1:5000')
+    flask_token = getattr(settings, 'FLASK_AUTH_TOKEN', 'super_secret_crm_token_123')
+    whatsapp_token = getattr(settings, 'WHATSAPP_API_TOKEN', None)
+    phone_id = getattr(settings, 'PHONE_NUMBER_ID', None)
+    
+    if config:
+        if config.flask_bot_url:
+            flask_url = config.flask_bot_url
+        elif config.flask_server_url:
+            flask_url = config.flask_server_url
+            
+        if config.flask_auth_token:
+            flask_token = config.flask_auth_token
+        if config.whatsapp_api_token:
+            whatsapp_token = config.whatsapp_api_token
+        if config.phone_number_id:
+            phone_id = config.phone_number_id
+            
+    return {
+        'flask_url': flask_url.rstrip('/'),
+        'flask_token': flask_token,
+        'whatsapp_token': whatsapp_token,
+        'phone_id': phone_id,
+        'crm_webhook_url': config.crm_webhook_url if config else getattr(settings, 'CRM_WEBHOOK_URL', 'http://localhost:8000/api/whatsapp/events/'),
+        'gemini_api_key': config.gemini_api_key if config else None,
+        'webhook_verify_token': config.webhook_verify_token if config else 'my_secret_token_123',
+        'config_obj': config
+    }
+
+
+def get_whatsapp_headers(config_id=None):
+    """
+    Constructs the exact HTTP headers dictionary required by the Flask bot
+    according to the dynamic multi-tenant specifications.
+    """
+    config = get_whatsapp_config(config_id)
+    
+    headers = {
+        "Authorization": f"Bearer {config['flask_token']}",
+        "Content-Type": "application/json"
+    }
+    
+    config_obj = config.get('config_obj')
+    is_ai_enabled = config_obj.is_ai_enabled if config_obj else False
+    
+    headers["X-AI-Enabled"] = "true" if is_ai_enabled else "false"
+    headers["X-Is-AI-Enabled"] = "true" if is_ai_enabled else "false"
+    
+    if config['whatsapp_token']:
+        headers["X-Whatsapp-Token"] = config['whatsapp_token']
+    if config['phone_id']:
+        headers["X-Phone-Number-Id"] = config['phone_id']
+    if config_obj and config_obj.whatsapp_business_account_id:
+        headers["X-WhatsApp-Business-Account-Id"] = str(config_obj.whatsapp_business_account_id)
+        headers["X-WABA-ID"] = str(config_obj.whatsapp_business_account_id)
+    if config_obj and config_obj.whatsapp_app_id:
+        headers["X-WhatsApp-App-Id"] = str(config_obj.whatsapp_app_id)
+    if config['crm_webhook_url']:
+        headers["X-CRM-Webhook-Url"] = config['crm_webhook_url']
+    if config['gemini_api_key'] and is_ai_enabled:
+        headers["X-Gemini-API-Key"] = config['gemini_api_key']
+    if config['webhook_verify_token']:
+        headers["X-Webhook-Verify-Token"] = config['webhook_verify_token']
+        
+    return headers, config['flask_url']
+
+
+# =====================================================================
+# NATIVE GEMINI AI qualification & LEAD SCORING FLOW (PORTED FROM FLASK)
+# =====================================================================
+
+QUESTIONS_CONFIG = {
+    "Skill Enhancement": [
+        {"options": ["Web Development", "Data Analytics", "Machine Learning", "UI/UX Design", "Other"]}, # Q4
+        {"options": ["Complete Beginner", "Intermediate/Basics", "Advanced Level"]}, # Q5
+        {"options": ["Right Away / Direct", "Within 30 Days", "Planning for Later"]}, # Q6
+        {"options": ["Yes", "No"]}, # Q7
+        {"options": ["Fully Dedicated", "Moderately Active", "Just Exploring"]}, # Q8
+        {"options": ["Career Transition", "Upskillment", "Gain Experience"]}, # Q9
+        {"options": ["Live Mentor-Guided", "Self-Paced Learning"]}, # Q10
+        {"options": ["Yes", "No"]}, # Q11
+        {"options": ["Yes", "No"]} # Q12
+    ],
+    "Trading Academy": [
+        {"options": ["Yes", "No"]}, # Q4
+        {"options": ["Complete Beginner", "Intermediate Level", "Advanced Level"]}, # Q5
+        {"options": ["Premium Capital", "Standard Capital", "Starter Capital"]}, # Q6
+        {"options": ["High Risk Growth", "Balanced/Moderate", "Low Risk Capital"]}, # Q7
+        {"options": ["Full-time", "Casual", "Just Exploring"]}, # Q8
+        {"options": ["Both Strategies", "Short-Term Focus", "Long-Term Focus"]}, # Q9
+        {"options": ["Daily", "Sometimes", "Limited"]}, # Q10
+        {"options": ["Yes", "No"]}, # Q11
+        {"options": ["Yes", "No"]} # Q12
+    ],
+    "Jobs": [
+        {"options": ["Software Engineer", "Data Analyst", "Product Manager", "Other"]}, # Q4
+        {"options": ["5+ Years Experience", "3 to 5 Years", "1 to 3 Years", "Fresher / Graduate"]}, # Q5
+        {"options": ["Immediate Joiner", "Within 1-2 Months", "Just Exploring"]}, # Q6
+        {"options": ["Yes, actively", "No, not currently"]}, # Q7
+        {"options": ["Fully Prepared", "Needs Preparation", "Not Ready Yet"]}, # Q8
+        {"options": ["Entry Level", "Mid Level", "Senior"]}, # Q9
+        {"options": ["Open to Relocate", "No, remote only"]}, # Q10
+        {"options": ["Yes, fully skilled", "Most core skills", "Not skilled yet"]}, # Q11
+        {"options": ["Yes", "No"]} # Q12
+    ]
+}
+
+def parse_conversation_state(history):
+    """
+    Deterministically parses conversation history sequentially to calculate
+    the exact step (1 to 14) and extracted metadata (name, phone, email, path, answers).
+    """
+    path = None
+    name = None
+    phone = None
+    email = None
+    answers = []
+
+    opt_in_words = {
+        "yes", "no", "hi", "hello", "start", "get started",
+        "opt-in", "opt in", "yes, i'm interested", "interested"
+    }
+    restart_words = {"hi", "hello", "start", "restart", "get started", "menu", "reset"}
+
+    for msg in history:
+        if msg["role"] != "user":
+            continue
+        
+        txt = msg["text"].strip()
+        txt_lower = txt.lower()
+
+        if txt_lower in restart_words:
+            path = None
+            name = None
+            phone = None
+            email = None
+            answers = []
+            continue
+
+        # Step 1: Path Selection
+        if path is None:
+            is_email_or_url = "@" in txt or txt_lower.startswith("http") or (
+                "." in txt and len(txt.split()) == 1 and len(txt) > 5
+            )
+            if not is_email_or_url:
+                if re.search(r"\bskill|\bupskill", txt_lower):
+                    path = "Skill Enhancement"
+                elif re.search(r"\btrad", txt_lower) or re.search(r"\bfortune\b", txt_lower):
+                    path = "Trading Academy"
+                elif re.search(r"\bjob", txt_lower) or re.search(r"\bcareer", txt_lower):
+                    path = "Jobs"
+            if path is None and txt_lower in opt_in_words:
+                continue
+            if path is None:
+                continue
+            continue
+
+        # Step 2: Name
+        if name is None:
+            name = txt
+            continue
+
+        # Step 3: Phone
+        if phone is None:
+            phone = txt
+            continue
+
+        # Step 4: Email
+        if email is None:
+            email = txt
+            continue
+
+        # Steps 5-13: Path-specific questions (Q5 to Q13)
+        if (path in ["Skill Enhancement", "Jobs"] and 
+            len(answers) == 1 and 
+            answers[0].lower() == "other"):
+            answers[0] = f"Other: {txt}"
+            continue
+
+        answers.append(txt)
+
+    # Calculate step
+    if path is None:
+        step = 1
+    elif name is None:
+        step = 2
+    elif phone is None:
+        step = 3
+    elif email is None:
+        step = 4
+    elif (path in ["Skill Enhancement", "Jobs"] and 
+          len(answers) == 1 and 
+          answers[0].lower() == "other"):
+        step = 5
+    else:
+        step = min(5 + len(answers), 14)
+
+    return {
+        "name": name,
+        "phone": phone,
+        "email": email,
+        "path": path,
+        "answers": answers,
+        "step": step
+    }
+
+
+def parse_database_conversation_history(contact):
+    """
+    Retrieves the chronological message history for a Contact directly from the database,
+    returning a list of standardized dictionary formats for the Gemini processor.
+    """
+    from whatsapp.models import Message
+    # Fetch messages sorted by timestamp/created_at
+    messages = Message.objects.filter(contact=contact).order_by('timestamp', 'created_at')
+    history = []
+    
+    for msg in messages:
+        # Standardize echoback / direction parsing
+        role = 'bot' if msg.direction == 'OUTGOING' else 'user'
+        history.append({"role": role, "text": msg.text or ""})
+        
+    return history
+
+
+def generate_gemini_response(history, waba_config):
+    """
+    Natively calls Google Gemini API to get the structured auto-reply text.
+    """
+    gemini_key = waba_config.get('gemini_api_key')
+    if not gemini_key:
+        return "Hello! I am a basic WhatsApp Bot. (Configure GEMINI_API_KEY in the CRM panel for AI qualification)"
+        
+    gemini_key = gemini_key.split()[0].strip()
+    state = parse_conversation_state(history)
+    step = state["step"]
+    
+    extra_instruction = ""
+    if step == 1:
+        extra_instruction = (
+            "\n\n### CRITICAL CURRENT FLOW CONSTRAINT ###\n"
+            "We are at Step 1: Pathway Selection.\n"
+            "You MUST ask them to select one of the three service paths.\n"
+            "You MUST present the paths using exactly this options tag verbatim:\n"
+            "### OPTIONS: Skill Enhancement, Trading Academy, Jobs ###\n"
+            "Do NOT ask for their name, phone, or email yet. Do NOT use any other wording or button labels.\n"
+        )
+    elif step == 2:
+        extra_instruction = (
+            f"\n\n### CRITICAL CURRENT FLOW CONSTRAINT ###\n"
+            f"We are at Step 2: Collecting the user's NAME.\n"
+            f"The user's selected path is '{state['path']}'.\n"
+            f"You MUST politely ask the user for their full name as a friendly, polite question.\n"
+            f"Do NOT ask for their phone or email yet.\n"
+            f"You MUST COMPLETELY OMIT the '### OPTIONS' tag from your response. Do not output any options.\n"
+        )
+    elif step == 3:
+        extra_instruction = (
+            f"\n\n### CRITICAL CURRENT FLOW CONSTRAINT ###\n"
+            f"We are at Step 3: Collecting the user's PHONE NUMBER.\n"
+            f"The user's name is '{state['name']}'.\n"
+            f"You MUST ask the user to type their phone number directly as a single clear question.\n"
+            f"Do NOT ask if they prefer 'Call' or 'Text', and do NOT offer options.\n"
+            f"You MUST COMPLETELY OMIT the '### OPTIONS' tag from your response. Do not output any options.\n"
+        )
+    elif step == 4:
+        extra_instruction = (
+            f"\n\n### CRITICAL CURRENT FLOW CONSTRAINT ###\n"
+            f"We are at Step 4: Collecting the user's EMAIL ADDRESS.\n"
+            f"The user's name is '{state['name']}' and phone is '{state['phone']}'.\n"
+            f"You MUST ask the user to type their email address directly as a single clear question.\n"
+            f"You MUST COMPLETELY OMIT the '### OPTIONS' tag from your response. Do not output any options.\n"
+        )
+    elif (state["path"] in ["Skill Enhancement", "Jobs"] and 
+          len(state["answers"]) == 1 and 
+          state["answers"][0].lower() == "other"):
+        extra_instruction = (
+            f"\n\n### CRITICAL CURRENT FLOW CONSTRAINT ###\n"
+            f"The user's selected path is: '{state['path']}'.\n"
+            f"The user selected 'Other' for the domain/role.\n"
+            f"You MUST immediately ask them to type/specify their desired domain or role directly.\n"
+            f"You MUST COMPLETELY OMIT the '### OPTIONS' tag from your response. Do not output any options.\n"
+        )
+    elif 5 <= step <= 13:
+        q_idx = len(state["answers"])
+        path_name = state["path"]
+        path_questions = QUESTIONS_CONFIG.get(path_name, []) if isinstance(path_name, str) else []
+        if q_idx < len(path_questions):
+            opts_list = path_questions[q_idx]["options"]
+            options_tag = f"### OPTIONS: {', '.join(opts_list)} ###"
+            extra_instruction = (
+                f"\n\n### CRITICAL CURRENT FLOW CONSTRAINT ###\n"
+                f"The user's selected path is: '{state['path']}'.\n"
+                f"We are at path-specific Question {4 + q_idx}.\n"
+                f"You MUST ask the next question: Question {4 + q_idx} for the '{state['path']}' pathway.\n"
+                f"You MUST present the options using exactly this options tag verbatim:\n"
+                f"{options_tag}\n"
+                f"Do NOT use any other wording or button labels.\n"
+                f"Ask exactly one question. Do not ask multiple questions.\n"
+            )
+    elif step == 14:
+        extra_instruction = (
+            f"\n\n### CRITICAL CURRENT FLOW CONSTRAINT ###\n"
+            f"All 12 qualification questions have been asked and answered!\n"
+            f"Thank them and politely tell them a counselor/advisor will reach out shortly.\n"
+            f"Do not output any score or classification. Only output the final JSON metadata block exactly as described in the instructions.\n"
+        )
+        
+    history_text = "\n".join([
+        f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['text']}"
+        for m in history
+    ])
+    
+    prompt = f"""You are a helpful and friendly WhatsApp AI assistant representing **Merida Tech Minds**, which operates the **Skill Learning Academy** (professional tech training), **Fortune Trading Academy** (stock market & trading training), and corporate recruitment.
+
+Your primary goal is to guide the user through exactly **12 qualification questions** (3 core questions + 9 path-specific questions) in a friendly, conversational manner, one or two at a time.
+
+### THE THREE PATHS:
+1. 🖥️ **Skill Enhancement (Skill Learning Academy):** Offers AI-integrated tech courses (Python, Java, MERN, MEAN, Data Science, Data Analytics, Cloud & Testing, Digital Marketing). Website: skilllearningacademy.com
+2. 📈 **Trading Academy (Fortune Trading Academy):** Offers stock market foundation, Technical Analysis, Options Trading & Hedging, Intraday strategies. Website: fortunetradingacademy.com
+3. 💼 **Jobs (Corporate Careers):** Hires for internal roles (AI/ML Engineer, Data Scientist, Spoken English Trainer, HR, Digital Marketing, Front Office Admin, Telecaller). Website: meridatechminds.com, apply via careers@meridatechminds.com
+
+---
+
+### THE 12-QUESTION QUALIFICATION FLOW:
+
+**Step 1:** Ask them to choose their **Path** (Skill Enhancement, Trading Academy, or Jobs).
+**Step 2:** Ask for their **Name**.
+**Step 3:** Ask for their **Phone Number**.
+**Step 4:** Ask for their **Email Address**.
+**Steps 5 to 13:** Present the 9 path-specific questions one-by-one based on their chosen path:
+
+#### 🖥️ Path 1: Skill Enhancement
+5. Which specific technical domain are you looking to master? (Web Development, Data Analytics, Machine Learning, UI/UX Design, Other)
+6. How would you describe your current experience level in this area? (Complete Beginner, Intermediate/Basics, Advanced Level)
+7. What is your preferred timeline to begin your training program? (Right Away / Direct, Within 30 Days, Planning for Later)
+8. Are you interested in earning an industry-recognized professional certification? (Yes, No)
+9. How would you define your dedication to completing this learning track? (Fully Dedicated, Moderately Active, Just Exploring)
+10. What is your primary objective or goal for taking this course? (Career Transition, Upskillment, Gain Experience)
+11. Which learning format best fits your daily schedule? (Live Mentor-Guided, Self-Paced Learning)
+12. Are you looking for career support and job placement assistance? (Yes, No)
+13. Would you like one of our academic counselors to call you with more details? (Yes, No)
+
+#### 📈 Path 2: Trading Academy
+5. Do you have any prior experience trading in the financial markets? (Yes, No)
+6. How would you grade your understanding of market analysis and trading strategies? (Complete Beginner, Intermediate Level, Advanced Level)
+7. What is your planned capital allocation or investment size for trading? (Premium Capital, Standard Capital, Starter Capital)
+8. How would you describe your risk tolerance and management preference? (High Risk Growth, Balanced/Moderate, Low Risk Capital)
+9. What is your ultimate goal and seriousness towards becoming a trader? (Full-time, Casual, Just Exploring)
+10. Are you looking to focus on short-term trading (Intraday) or long-term wealth building? (Both Strategies, Short-Term Focus, Long-Term Focus)
+11. How much time are you able to dedicate to analyzing the markets on a daily basis? (Daily, Sometimes, Limited)
+12. Are you interested in a structured 1-on-1 mentorship program with experienced traders? (Yes, No)
+13. Would you like a senior trading expert to call you for a free strategy session? (Yes, No)
+
+#### 💼 Path 3: Jobs
+5. Which professional career track or role are you looking to apply for? (Software Engineer, Data Analyst, Product Manager, Other)
+6. How many years of professional experience do you have in this field? (5+ Years Experience, 3 to 5 Years, 1 to 3 Years, Fresher / Graduate)
+7. What is your target timeline or urgency for joining our team? (Immediate Joiner, Within 1-2 Months, Just Exploring)
+8. Are you actively applying and interviewing with other organizations? (Yes, actively, No, not currently)
+9. How would you rate your readiness for a technical or management interview? (Fully Prepared, Needs Preparation, Not Ready Yet)
+10. Which package range corresponds with your expected salary bracket? (Entry Level, Mid Level, Senior)
+11. Are you open to relocating to our office locations if required? (Open to Relocate, No, remote only)
+12. Do you feel you possess the required technical skills for the role? (Yes, fully skilled, Most core skills, Not skilled yet)
+13. Would you like to schedule a quick 10-minute screening call with our HR coordinator? (Yes, No)
+
+---
+
+### BEHAVIORAL INSTRUCTIONS:
+- **INTRODUCTORY GREETING (STRICT):** When the user first messages you, introduce yourself briefly and professionally, and immediately ask them how you can help by providing the three paths. Use a format similar to: *"Hello! 👋 Welcome to Merida Tech Minds. I'm your AI Assistant. How can I help you today?"* Then provide the options using the tag `### OPTIONS: Skill Enhancement, Trading Academy, Jobs ###`.
+- Ask the questions naturally in a friendly, conversational manner. **Never ask multiple questions at once.** Ask one question, wait for their answer, then ask the next.
+- **STRICT OPEN-ENDED STEPS (CRITICAL):** Steps 2 (Name), 3 (Phone Number), and 4 (Email) are strictly open-ended. You MUST NEVER output the `### OPTIONS` tag or any buttons for these steps. Simply ask the user to type their detail directly. Specifically:
+  * For Step 3 (Phone Number): Do NOT ask if the user prefers Call or Text, do NOT mention 'Call' or 'Text', and do NOT offer 'Call' or 'Text' as options. Ask them to type their phone number directly as a single clear question.
+  * For Step 4 (Email): Do NOT offer any options or buttons. Ask them to type their email address directly as a single clear question.
+  * Always make sure to write full, grammatically complete sentences and questions. Do not stop generating mid-sentence.
+- **STRICT TOPIC LIMITATION (GUARDRAILS):** You are EXCLUSIVELY authorized to discuss Merida Tech Minds, Academy Courses, and Career Coaching. If the user asks a general knowledge, math, trivia, cooking, or any other out-of-scope question unrelated to our brand, YOU MUST POLITELY REFUSE to answer and redirect them back to Merida Academy immediately.
+- **CRITICAL STOP RULE:** Stop generating text IMMEDIATELY after you ask a single question! Do NOT invent, predict, or simulate the user's response. Wait for the real user to reply.
+- When all 12 questions are completed, thank them and tell them a counselor will reach out shortly.
+- **POST-COMPLETION RULE:** Once the flow is finalized, it remains closed. If the user messages again after completion, switch to standard helpful customer support mode for Merida Tech Minds. DO NOT REPEAT PREVIOUS QUESTIONS OR ASK FOR ANOTHER CALLBACK! Simply answer their specific new inquiry about the company.
+- **DYNAMIC UI TAGGING:** Only use this tag when presenting specific predefined choices (like paths, Yes/No, skill levels). Format: `### OPTIONS: Option A, Option B ###`. If you are asking an open-ended question where the user must type their own answer (like Name, Phone Number, Email, or budget), you MUST completely OMIT the `### OPTIONS` tag from your response. Do not invent options like 'Text Input'.
+- **PATH SELECTION BUTTON LABELS (CRITICAL):** When presenting the three service paths in Step 1, you MUST use EXACTLY these button labels — no other wording is allowed: `Skill Enhancement`, `Trading Academy`, `Jobs`. These must appear verbatim in the OPTIONS tag like this: `### OPTIONS: Skill Enhancement, Trading Academy, Jobs ###`. When the user replies with one of these labels, route them to the correct path: 'Skill Enhancement' -> Path 1 (Upskilling), 'Trading Academy' -> Path 2 (Trading), 'Jobs' -> Path 3 (Jobs).
+- **DYNAMIC 'OTHER' HANDLING RULE:** For Question 5 in both the Upskilling and Jobs paths, the choices include 'Other'. If the user clicks or replies with 'Other', you must immediately ask them to specify and type their desired domain/role (omit the `### OPTIONS` tag here since they must type a custom answer). Once they respond with their typed choice, capture it, and then proceed directly to Question 6.
+- **CRITICAL DATA EXPORT RULE:** You MUST ONLY output the JSON metadata block at the VERY END of the conversation, AFTER all 12 questions have been fully asked and answered. DO NOT output the JSON block early while you are still gathering information. During the questioning phase, focus strictly on asking the questions.
+- **IMPORTANT MAPPING RULE:** Based on the conversation context, assign a simple logical category like "Student", "Professional", or "Enterprise". Do not use B2B/B2C terminology.
+```json
+### LEAD_METADATA ###
+{{
+  "name": "User Name",
+  "phone_number": "Phone Number",
+  "email": "Email Address (Leave blank if missing)",
+  "category": "User Category",
+  "courses": "Requested courses (if applicable)",
+  "services": "Requested services (if applicable)",
+  "path": "Upskilling/Trading/Jobs",
+  "summary": "Short conversational summary of their goals"
+}}
+```
+
+Conversation so far:
+{history_text}
+
+{extra_instruction}
+
+Now respond to the last user message."""
+
+    models = [
+        ("gemini-2.5-flash-lite", {}),
+        ("gemini-2.5-flash", {}),
+        ("gemini-flash-latest", {}),
+        ("gemini-flash-lite-latest", {}),
+        ("gemini-2.0-flash-lite", {}),
+        ("gemini-2.0-flash", {}),
+    ]
+    for model_name, extra in models:
+        for attempt in range(2):
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
+                headers = {"Content-Type": "application/json"}
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "maxOutputTokens": 500
+                    }
+                }
+                payload.update(extra)
+                response = requests.post(url, headers=headers, json=payload, timeout=12)
+                if response.status_code == 503:
+                    time.sleep(0.5)
+                    continue
+                response.raise_for_status()
+                data = response.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+            except Exception as e:
+                time.sleep(0.5)
+                
+    return "I'm a little busy right now, please try again in a moment!"
+
+
+def process_and_reply_directly(contact, incoming_text):
+    """
+    Runs natively in a background thread: processes incoming text, computes
+    AI qualification steps, queries Gemini, parses leads metadata, formats buttons,
+    sends outbound Meta API call, and broadcasts results back to React.
+    """
+    try:
+        import json
+        import re
+        from django.utils import timezone
+        from whatsapp.models import Message
+        
+        # Load local singleton credentials
+        waba_config = get_whatsapp_config()
+        config_obj = waba_config.get('config_obj') if isinstance(waba_config, dict) else None
+        
+        # AI auto-reply is globally disabled — remove the line below to re-enable
+        return
+
+        # If config is missing or AI toggle is off, abort
+        if not config_obj or not config_obj.is_ai_enabled:
+            print(f"INFO: Native AI is disabled on this account. Skipping auto-reply.")
+            return
+
+        # Fetch conversation history from DATABASE
+        history = parse_database_conversation_history(contact)
+        
+        # Request Gemini to generate a response
+        reply_text = generate_gemini_response(history, waba_config)
+        
+        # Process qualification state
+        state = parse_conversation_state(history)
+        step = state["step"]
+        
+        clean_reply = reply_text
+        lead_data = None
+        
+        # 1. Check for Lead Metadata JSON exports at step 14
+        if "### LEAD_METADATA ###" in reply_text:
+            parts = reply_text.split("### LEAD_METADATA ###")
+            clean_reply = parts[0].strip()
+            clean_reply = re.sub(r"```(json)?\s*$", "", clean_reply).strip()
+            
+            metadata_str = parts[1].strip()
+            metadata_str = re.sub(r"^```json|```$", "", metadata_str).strip()
+            
+            try:
+                lead_data = json.loads(metadata_str)
+                print(f"🔥 [NATIVE LEAD CAPTURED]: {lead_data}")
+                
+                # Write to local file for diagnostic purposes
+                with open("leads_captured.txt", "a", encoding="utf-8") as f:
+                    f.write(json.dumps(lead_data) + "\n")
+                    
+                # Natively update Lead fields in Django
+                if lead_data.get("name") and contact.name == "Unknown":
+                    contact.name = lead_data["name"]
+                if lead_data.get("email"):
+                    contact.email = lead_data["email"]
+                    
+                if not contact.attributes:
+                    contact.attributes = {}
+                    
+                for key in ["category", "courses", "summary"]:
+                    if lead_data.get(key):
+                        contact.attributes[key] = lead_data[key]
+                        
+                contact.save(update_fields=['name', 'email', 'attributes'])
+            except Exception as e:
+                print(f"Error parsing native lead metadata: {e}")
+
+        # 2. Extract Dynamic UI Interactive Buttons
+        interactive_payload = None
+        option_strings = []
+        
+        # Clean standard option tags from text
+        clean_reply = re.sub(r"### OPTIONS:.*?###", "", clean_reply).strip()
+        clean_reply = re.sub(r"[\ufe00-\ufe0f]", "", clean_reply)
+        
+        if step == 1:
+            option_strings = ["Skill Enhancement", "Trading Academy", "Jobs"]
+        elif step in [2, 3, 4]:
+            option_strings = []
+        elif (state["path"] in ["Skill Enhancement", "Jobs"] and 
+              len(state["answers"]) == 1 and 
+              state["answers"][0].lower() == "other"):
+            option_strings = []
+        elif 5 <= step <= 13:
+            q_idx = len(state["answers"])
+            path_name = state["path"]
+            path_questions = QUESTIONS_CONFIG.get(path_name, []) if isinstance(path_name, str) else []
+            if q_idx < len(path_questions):
+                option_strings = path_questions[q_idx]["options"]
+        
+        # Strip option bullet points from message text body
+        if option_strings:
+            for opt in option_strings:
+                esc_opt = re.escape(opt)
+                pattern = rf"(?mi)^\s*(?:<-|<=|->|=>|←|↩|[-*•\u2190-\u21FF\u27A1\u2705]|\U0001F449|\U0001F44D)[\ufe00-\ufe0f]?\s*{esc_opt}\s*\r?\n?"
+                clean_reply = re.sub(pattern, "", clean_reply)
+                clean_reply = re.sub(rf"(?mi)^\s*{esc_opt}\s*\r?\n?", "", clean_reply)
+            clean_reply = re.sub(r"\n{3,}", "\n\n", clean_reply).strip()
+            
+            # Format Interactive WhatsApp buttons or lists
+            if 1 <= len(option_strings) <= 3:
+                btn_array = []
+                for idx, raw_val in enumerate(option_strings):
+                    btn_array.append({
+                        "type": "reply",
+                        "reply": {"id": f"btn_opt_{idx}", "title": raw_val[:20]}
+                    })
+                interactive_payload = {
+                    "type": "button",
+                    "body": {"text": clean_reply[:1024]},
+                    "action": {"buttons": btn_array}
+                }
+            elif 4 <= len(option_strings) <= 10:
+                row_array = []
+                for idx, raw_val in enumerate(option_strings):
+                    row_array.append({
+                        "id": f"lst_opt_{idx}",
+                        "title": raw_val[:24]
+                    })
+                interactive_payload = {
+                    "type": "list",
+                    "body": {"text": clean_reply[:1024]},
+                    "action": {
+                        "button": "Make Selection",
+                        "sections": [{
+                            "title": "Available Choices",
+                            "rows": row_array
+                        }]
+                    }
+                }
+
+        # 3. Create Outgoing Database Message
+        msg_type = 'interactive' if interactive_payload else 'text'
+        message = Message.objects.create(
+            contact=contact,
+            text=clean_reply,
+            sender='bot',
+            direction='OUTGOING',
+            status='Waiting',
+            type=msg_type,
+            buttons=option_strings if option_strings else None,
+            timestamp=timezone.now()
+        )
+        
+        # Update Contact last message
+        contact.last_message = clean_reply
+        contact.last_message_time = message.timestamp
+        contact.save(update_fields=['last_message', 'last_message_time'])
+        
+        # Broadcast standard sending message event to UI
+        _broadcast_crm_event('message_sent', contact=contact, message=message)
+
+        # 4. Dispatch natively to Meta APIs
+        from whatsapp.services import send_whatsapp_message_direct_to_meta
+        meta_response, status_code = send_whatsapp_message_direct_to_meta(
+            recipient_id=contact.phone_number,
+            waba_config=waba_config,
+            text=clean_reply,
+            interactive=interactive_payload
+        )
+        
+        if status_code in [200, 201] and isinstance(meta_response, dict):
+            provider_message_id = None
+            if "messages" in meta_response and len(meta_response["messages"]) > 0:
+                provider_message_id = meta_response["messages"][0].get("id")
+            if provider_message_id:
+                message.provider_message_id = provider_message_id
+                message.status = 'Sent'
+                message.save(update_fields=['provider_message_id', 'status'])
+                _broadcast_crm_event('message_status', contact=contact, message=message)
+                
+    except Exception as e:
+        print(f"CRITICAL ERROR in native process_and_reply_directly: {e}")
+

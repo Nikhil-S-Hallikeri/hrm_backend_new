@@ -164,45 +164,330 @@ def month_target_percentage_cal_function(total_achieved,targets):
     else:
         color="green"
     return color
-        
-class AddNewActivitys(APIView):
-    # def get(self,request,login_user):
-    #     try:
-    #         currentdata=timezone.localdate()
-    #         current_month=currentdata.month
-    #         current_year=currentdata.year
 
-    #         activity_obj=NewActivityModel.objects.filter(Employee__EmployeeId=login_user,Activity_assigned_Date__month=current_month,Activity_assigned_Date__year=current_year)
-    #         Activity_list=[]
+#17/7/26 - old code occuring N+1        
+# class AddNewActivitys(APIView):
+#     # def get(self,request,login_user):
+#     #     try:
+#     #         currentdata=timezone.localdate()
+#     #         current_month=currentdata.month
+#     #         current_year=currentdata.year
 
-    #         for Activity in activity_obj:
-    #             employee_daily_achives=MonthAchivesListModel.objects.filter(Activity_instance=Activity.pk)
+#     #         activity_obj=NewActivityModel.objects.filter(Employee__EmployeeId=login_user,Activity_assigned_Date__month=current_month,Activity_assigned_Date__year=current_year)
+#     #         Activity_list=[]
 
-    #             Monthly_Activity_List=[]
-    #             c=0
-    #             for daily_achives in employee_daily_achives:
-    #                 monthserializer=MonthAchivesListSerializer(daily_achives).data
-    #                 per_day_achieves=NewDailyAchivesModel.objects.filter(current_day_activity__pk=daily_achives.pk)
-    #                 monthserializer["achieved"]=per_day_achieves.count()
-    #                 Monthly_Activity_List.append(monthserializer)
-    #                 c+=per_day_achieves.count()
+#     #         for Activity in activity_obj:
+#     #             employee_daily_achives=MonthAchivesListModel.objects.filter(Activity_instance=Activity.pk)
 
-    #             total_achieved_count = employee_daily_achives.aggregate(total=Sum('achieved'))['total'] 
-    #             print(total_achieved_count)
-    #             activityserializer=NewActivityModelSerializer(Activity).data
-    #             activityserializer['MonthAchivesList'] = Monthly_Activity_List
-    #             activityserializer['Achived_target'] = c
+#     #             Monthly_Activity_List=[]
+#     #             c=0
+#     #             for daily_achives in employee_daily_achives:
+#     #                 monthserializer=MonthAchivesListSerializer(daily_achives).data
+#     #                 per_day_achieves=NewDailyAchivesModel.objects.filter(current_day_activity__pk=daily_achives.pk)
+#     #                 monthserializer["achieved"]=per_day_achieves.count()
+#     #                 Monthly_Activity_List.append(monthserializer)
+#     #                 c+=per_day_achieves.count()
 
-    #             Activity_list.append(activityserializer)
-    #         return Response(Activity_list,status=status.HTTP_200_OK)
+#     #             total_achieved_count = employee_daily_achives.aggregate(total=Sum('achieved'))['total'] 
+#     #             print(total_achieved_count)
+#     #             activityserializer=NewActivityModelSerializer(Activity).data
+#     #             activityserializer['MonthAchivesList'] = Monthly_Activity_List
+#     #             activityserializer['Achived_target'] = c
+
+#     #             Activity_list.append(activityserializer)
+#     #         return Response(Activity_list,status=status.HTTP_200_OK)
     
-    #     except Exception as e:
-    #         return Response(str(e),status=status.HTTP_400_BAD_REQUEST)
+#     #     except Exception as e:
+#     #         return Response(str(e),status=status.HTTP_400_BAD_REQUEST)
+#     def get(self, request, login_user=None, assigned_by=None):
+#         try:
+#             cm = request.GET.get("current_month")
+#             cy = request.GET.get("current_year")
+#             # Get current date, month, and year
+#             if cm and cy:
+#                 current_month = int(cm)
+#                 current_year = int(cy)
+#             else:
+#                 current_date = timezone.localdate()
+#                 current_month = current_date.month
+#                 current_year = current_date.year
+
+#             login_emp_id = login_user if login_user else assigned_by
+#             if not login_emp_id:
+#                 return Response({"error": "login_user or assigned_by is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+#             try:
+#                 current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
+#             except EmployeeDataModel.DoesNotExist:
+#                 return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
+
+#             target_emp_id = request.GET.get("target_emp_id")
+
+#             # Role-Based Filters for manager view vs individual view
+#             if target_emp_id:
+#                 target_employees_q = Q(EmployeeId=target_emp_id)
+#             else:
+#                 target_employees_q = Q(pk=current_user.pk)
+#                 if current_user.Designation in ['Admin', 'HR', 'Recruiter']:
+#                     if current_user.Designation == 'Admin':
+#                         target_employees_q = Q()
+#                     else:
+#                         team_members_q = Q(Reporting_To=current_user)
+#                         if current_user.Designation == 'HR':
+#                             target_employees_q = team_members_q | Q(Designation='Recruiter') | Q(pk=current_user.pk)
+#                         elif current_user.Designation == 'Recruiter':
+#                             target_employees_q = team_members_q | Q(pk=current_user.pk)
+
+#             target_employees = EmployeeDataModel.objects.filter(target_employees_q)
+
+#             # Fetch all activities for resolved target employees
+#             activities = NewActivityModel.objects.filter(
+#                 Employee__in=target_employees,
+#                 Activity_assigned_Date__month=current_month,
+#                 Activity_assigned_Date__year=current_year
+#             )
+
+#             #26/6/26
+#             # Fetch all daily achievements (MonthAchivesListModel) for all retrieved activities
+#             daily_achievements = MonthAchivesListModel.objects.filter(
+#                 Activity_instance__in=activities
+#             )
+            
+#             # Fetch all daily records (NewDailyAchivesModel) for these daily achievements,
+#             # using select_related to pre-load all serializer fields.
+#             daily_records = NewDailyAchivesModel.objects.filter(
+#                 current_day_activity__in=daily_achievements
+#             ).select_related(
+#                 'current_day_activity__Activity_instance__Employee',
+#                 'current_day_activity__Activity_instance__activity_assigned_by',
+#                 'current_day_activity__Activity_instance__Activity',
+#                 'assigned_requirement__requirement__client'
+#             #15/7/26
+#             ).exclude(lead_status='staged').exclude(
+#                 Q(current_day_activity__Activity_instance__Activity__activity_name="interview_calls", interview_status__isnull=True)
+#                 | Q(current_day_activity__Activity_instance__Activity__activity_name="interview_calls", interview_status="")
+#                 | Q(current_day_activity__Activity_instance__Activity__activity_name="client_calls", client_status__isnull=True)
+#                 | Q(current_day_activity__Activity_instance__Activity__activity_name="client_calls", client_status="")
+#             )
+            
+#             # Map MonthAchivesListModel instances by their Activity_instance ID
+#             achievements_by_activity = defaultdict(list)
+#             for da in daily_achievements:
+#                 achievements_by_activity[da.Activity_instance_id].append(da)
+                
+#             # Map daily records by their current_day_activity ID
+#             records_by_achievement = defaultdict(list)
+#             for dr in daily_records:
+#                 records_by_achievement[dr.current_day_activity_id].append(dr)
+
+#             # Group activities by Activity_id (ActivityListModel ID)
+#             grouped_activities = defaultdict(list)
+#             for act in activities:
+#                 if act.Activity:
+#                     grouped_activities[act.Activity.id].append(act)
+
+#             activity_list = []
+#             for activity_id, act_list in grouped_activities.items():
+#                 # Aggregate targets
+#                 targets_sum = 0
+#                 for act in act_list:
+#                     try:
+#                         targets_sum += int(act.targets) if act.targets else 0
+#                     except ValueError:
+#                         pass
+
+#                 # Aggregate daily achievements
+#                 daily_accumulated = defaultdict(lambda: {"achieved": 0, "per_day_achievements": []})
+#                 for act in act_list:
+#                     # daily_achievements = MonthAchivesListModel.objects.filter(Activity_instance=act.pk)
+#                     # for daily_achievement in daily_achievements:
+#                     #     per_day_achievements = NewDailyAchivesModel.objects.filter(
+#                     #         current_day_activity__pk=daily_achievement.pk
+#                     #     ).exclude(lead_status='staged')
+#                     #26/6/26
+#                     act_achievements = achievements_by_activity.get(act.pk, [])
+#                     for daily_achievement in act_achievements:
+#                         records = records_by_achievement.get(daily_achievement.pk, [])
+                        
+#                         # achieved_count = per_day_achievements.count()
+#                         # serialized_per_day = NewDailyAchivesModelSerializer(per_day_achievements, many=True).data
+#                         #26/6/26
+#                         achieved_count = len(records)
+#                         serialized_per_day = NewDailyAchivesModelSerializer(records, many=True).data
+                        
+#                         date_key = daily_achievement.Date
+#                         daily_accumulated[date_key]["achieved"] += achieved_count
+#                         daily_accumulated[date_key]["per_day_achievements"].extend(serialized_per_day)
+
+#                 total_achieved_sum = sum(day_info["achieved"] for day_info in daily_accumulated.values())
+                
+#                 # Build MonthAchivesList
+#                 monthly_activity_list = []
+#                 days_count = len(daily_accumulated) if daily_accumulated else 1
+#                 daily_targets = targets_sum / days_count
+
+#                 for date_key, day_info in daily_accumulated.items():
+#                     team_achieved = day_info["achieved"]
+#                     total_achieved_per_day = (team_achieved / daily_targets) * 100 if daily_targets != 0 else 0
+#                     total_achieved_per_day = int(total_achieved_per_day)
+
+#                     if daily_targets == 0:
+#                         status_val = "4"
+#                     elif total_achieved_per_day < 60:
+#                         status_val = "0"
+#                     elif total_achieved_per_day >= 60 and total_achieved_per_day < 80:
+#                         status_val = "1"
+#                     elif total_achieved_per_day >= 80 and total_achieved_per_day < 90:
+#                         status_val = "2"
+#                     else:
+#                         status_val = "3"
+
+#                     date_str = date_key.strftime("%Y-%m-%d") if hasattr(date_key, "strftime") else str(date_key)
+#                     monthly_activity_list.append({
+#                         "id": None,
+#                         "Date": date_str,
+#                         "achieved": team_achieved,
+#                         "per_day_achievements": day_info["per_day_achievements"],
+#                         "status": status_val
+#                     })
+
+#                 # Sort monthly_activity_list by Date
+#                 monthly_activity_list.sort(key=lambda x: x["Date"])
+
+#                 # Build final aggregated activity object
+#                 activity_serializer = {
+#                     "id": act_list[0].id if act_list else None,
+#                     "targets": targets_sum,
+#                     "Achived_target": total_achieved_sum,
+#                     "activity_name": act_list[0].Activity.activity_name if act_list[0].Activity else "",
+#                     "Activity": activity_id,
+#                     "MonthAchivesList": monthly_activity_list,
+#                     "status": month_target_percentage_cal_function(total_achieved=total_achieved_sum, targets=targets_sum)
+#                 }
+#                 activity_list.append(activity_serializer)
+
+#             return Response(activity_list, status=status.HTTP_200_OK)
+
+#         except Exception as e:
+#             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        
+#     def post(self, request, login_user):
+#         try:
+#             request_data = request.data.copy()
+#             # Fetching employee and activity details
+#             employee_id = request_data.get("Employee")
+#             activity_id = request_data.get("Activity")
+#             services=request.data.get("service_list")
+
+#             if not employee_id or not activity_id:
+#                 return Response(
+#                     {"error": "Both Employee and Activity fields are required."},
+#                     status=status.HTTP_400_BAD_REQUEST,
+#                 ) 
+#             login_emp_obj = EmployeeDataModel.objects.get(EmployeeId=login_user)
+#             emp_instance = EmployeeDataModel.objects.get(EmployeeId=employee_id)
+#             activity_instance = ActivityListModel.objects.filter(pk=int(activity_id)).first()
+
+#             if services and not isinstance(services, list):
+#                 return Response("services required in the list form", status=status.HTTP_400_BAD_REQUEST)
+
+#             if not activity_instance:
+#                 return Response(
+#                     {"error": f"Activity with ID {activity_id} does not exist."},
+#                     status=status.HTTP_400_BAD_REQUEST,
+#                 )
+            
+#             # Update request data
+#             request_data["Activity"] = activity_instance.pk
+#             request_data["Employee"] = emp_instance.pk
+#             request_data["activity_assigned_by"] = login_emp_obj.pk
+#             request_data["targets"] = request_data.get("targets", 0) or 0  # Default targets to 0 if not provided
+#             # Serialize and validate
+#             serializer = NewActivityModelSerializer(data=request_data)
+            
+#             if serializer.is_valid():
+#                 instance = serializer.save()
+#                 # Get the current date and last day of the current month
+#                 current_date = timezone.localdate()
+#                 current_year = current_date.year
+#                 current_month = current_date.month
+                
+#                 last_day_of_month = monthrange(current_year, current_month)[1]
+#                 end_date = current_date.replace(day=last_day_of_month)
+
+#                 # Create MonthAchivesListModel entries
+#                 activity_obj=NewActivityModel.objects.filter(pk=instance.pk).first()
+#                 print(activity_obj)
+                
+#                 while current_date <= end_date:
+#                     MonthAchivesListModel.objects.create(
+#                         Activity_instance=instance, Date=current_date
+#                     )
+#                     current_date += timedelta(days=1)
+                    
+#                 # Create notification
+                
+#                 # if login_user != employee_id:
+#                 #     sender = RegistrationModel.objects.get(EmployeeId=login_user)
+#                 #     receiver = RegistrationModel.objects.get(EmployeeId=employee_id)
+#                     # Notification.objects.create(
+#                     #     sender=sender,
+#                     #     receiver=receiver,
+#                     #     message=f"The activity '{instance.Activity.activity_name}' was assigned to you on {timezone.localdate()} by {login_emp_obj.Name}.",
+#                     # )
+
+#                 return Response({'status': 'success'}, status=status.HTTP_200_OK)
+#             print("serializer.errors",serializer.errors)
+#             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+#         except EmployeeDataModel.DoesNotExist as e:
+#             return Response(
+#                 {"error": f"Employee not found: {str(e)}"},
+#                 status=status.HTTP_404_NOT_FOUND,
+#             )
+#         except Exception as e:
+#             print(e)
+#             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+#     def patch(self,request,activity_id):
+
+#         activity_obj=NewActivityModel.objects.filter(pk=activity_id).first()
+#         new_activity_serilaizer=NewActivityModelSerializer(activity_obj,data=request.data,partial=True)
+#         if new_activity_serilaizer.is_valid():
+#             instance=new_activity_serilaizer.save()
+#             return Response("Done",status=status.HTTP_200_OK)
+#         else:
+#             return Response(new_activity_serilaizer.errors,status=status.HTTP_400_BAD_REQUEST)
+    
+#     def delete(self,request,activity_id):
+        
+#         activity_obj=NewActivityModel.objects.filter(pk=activity_id).first()
+#         if activity_obj:
+#             activity_obj.delete()
+#             return Response("Done",status=status.HTTP_200_OK)
+#         else:
+#             return Response("id not exist",status=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+# 17/7/26 - New code optimized N+1 query took reference by studio (FIXED)
+import calendar
+from datetime import datetime, timedelta, date
+from collections import defaultdict
+from django.utils import timezone
+from django.utils.timezone import localtime
+from django.db.models import Q, Sum, Prefetch
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from calendar import monthrange
+
+class AddNewActivitys(APIView):
     def get(self, request, login_user=None, assigned_by=None):
         try:
             cm = request.GET.get("current_month")
             cy = request.GET.get("current_year")
-            # Get current date, month, and year
             if cm and cy:
                 current_month = int(cm)
                 current_year = int(cy)
@@ -222,7 +507,6 @@ class AddNewActivitys(APIView):
 
             target_emp_id = request.GET.get("target_emp_id")
 
-            # Role-Based Filters for manager view vs individual view
             if target_emp_id:
                 target_employees_q = Q(EmployeeId=target_emp_id)
             else:
@@ -239,14 +523,43 @@ class AddNewActivitys(APIView):
 
             target_employees = EmployeeDataModel.objects.filter(target_employees_q)
 
-            # Fetch all activities for resolved target employees
             activities = NewActivityModel.objects.filter(
                 Employee__in=target_employees,
                 Activity_assigned_Date__month=current_month,
                 Activity_assigned_Date__year=current_year
             )
 
-            # Group activities by Activity_id (ActivityListModel ID)
+            daily_achievements = MonthAchivesListModel.objects.filter(
+                Activity_instance__in=activities
+            )
+            
+            # Optimized query with prefetch_related for followups to eliminate N+1 inside serializers
+            daily_records = NewDailyAchivesModel.objects.filter(
+                current_day_activity__in=daily_achievements
+            ).select_related(
+                'current_day_activity__Activity_instance__Employee',
+                'current_day_activity__Activity_instance__activity_assigned_by',
+                'current_day_activity__Activity_instance__Activity',
+                'assigned_requirement__requirement__client'
+            ).prefetch_related(
+                'followups'
+            ).exclude(lead_status='staged').exclude(
+                Q(current_day_activity__Activity_instance__Activity__activity_name="interview_calls", interview_status__isnull=True)
+                | Q(current_day_activity__Activity_instance__Activity__activity_name="interview_calls", interview_status="")
+                | Q(current_day_activity__Activity_instance__Activity__activity_name="client_calls", client_status__isnull=True)
+                | Q(current_day_activity__Activity_instance__Activity__activity_name="client_calls", client_status="")
+            )
+            
+            # Bulk serialize all daily records at once to avoid loop execution overhead
+            serialized_records_list = NewDailyAchivesModelSerializer(daily_records, many=True).data
+            records_by_achievement = defaultdict(list)
+            for record_obj, serialized_data in zip(daily_records, serialized_records_list):
+                records_by_achievement[record_obj.current_day_activity_id].append(serialized_data)
+
+            achievements_by_activity = defaultdict(list)
+            for da in daily_achievements:
+                achievements_by_activity[da.Activity_instance_id].append(da)
+                
             grouped_activities = defaultdict(list)
             for act in activities:
                 if act.Activity:
@@ -254,7 +567,6 @@ class AddNewActivitys(APIView):
 
             activity_list = []
             for activity_id, act_list in grouped_activities.items():
-                # Aggregate targets
                 targets_sum = 0
                 for act in act_list:
                     try:
@@ -262,25 +574,19 @@ class AddNewActivitys(APIView):
                     except ValueError:
                         pass
 
-                # Aggregate daily achievements
                 daily_accumulated = defaultdict(lambda: {"achieved": 0, "per_day_achievements": []})
                 for act in act_list:
-                    daily_achievements = MonthAchivesListModel.objects.filter(Activity_instance=act.pk)
-                    for daily_achievement in daily_achievements:
-                        per_day_achievements = NewDailyAchivesModel.objects.filter(
-                            current_day_activity__pk=daily_achievement.pk
-                        ).exclude(lead_status='staged')
-                        
-                        achieved_count = per_day_achievements.count()
-                        serialized_per_day = NewDailyAchivesModelSerializer(per_day_achievements, many=True).data
+                    act_achievements = achievements_by_activity.get(act.pk, [])
+                    for daily_achievement in act_achievements:
+                        serialized_records = records_by_achievement.get(daily_achievement.pk, [])
+                        achieved_count = len(serialized_records)
                         
                         date_key = daily_achievement.Date
                         daily_accumulated[date_key]["achieved"] += achieved_count
-                        daily_accumulated[date_key]["per_day_achievements"].extend(serialized_per_day)
+                        daily_accumulated[date_key]["per_day_achievements"].extend(serialized_records)
 
                 total_achieved_sum = sum(day_info["achieved"] for day_info in daily_accumulated.values())
                 
-                # Build MonthAchivesList
                 monthly_activity_list = []
                 days_count = len(daily_accumulated) if daily_accumulated else 1
                 daily_targets = targets_sum / days_count
@@ -310,10 +616,8 @@ class AddNewActivitys(APIView):
                         "status": status_val
                     })
 
-                # Sort monthly_activity_list by Date
                 monthly_activity_list.sort(key=lambda x: x["Date"])
 
-                # Build final aggregated activity object
                 activity_serializer = {
                     "id": act_list[0].id if act_list else None,
                     "targets": targets_sum,
@@ -333,10 +637,9 @@ class AddNewActivitys(APIView):
     def post(self, request, login_user):
         try:
             request_data = request.data.copy()
-            # Fetching employee and activity details
             employee_id = request_data.get("Employee")
             activity_id = request_data.get("Activity")
-            services=request.data.get("service_list")
+            services = request.data.get("service_list")
 
             if not employee_id or not activity_id:
                 return Response(
@@ -356,17 +659,15 @@ class AddNewActivitys(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             
-            # Update request data
             request_data["Activity"] = activity_instance.pk
             request_data["Employee"] = emp_instance.pk
             request_data["activity_assigned_by"] = login_emp_obj.pk
-            request_data["targets"] = request_data.get("targets", 0) or 0  # Default targets to 0 if not provided
-            # Serialize and validate
+            request_data["targets"] = request_data.get("targets", 0) or 0
+            
             serializer = NewActivityModelSerializer(data=request_data)
             
             if serializer.is_valid():
                 instance = serializer.save()
-                # Get the current date and last day of the current month
                 current_date = timezone.localdate()
                 current_year = current_date.year
                 current_month = current_date.month
@@ -374,29 +675,18 @@ class AddNewActivitys(APIView):
                 last_day_of_month = monthrange(current_year, current_month)[1]
                 end_date = current_date.replace(day=last_day_of_month)
 
-                # Create MonthAchivesListModel entries
-                activity_obj=NewActivityModel.objects.filter(pk=instance.pk).first()
-                print(activity_obj)
+                activity_obj = NewActivityModel.objects.filter(pk=instance.pk).first()
                 
+                # Bulk create achievements to reduce queries
+                achives_to_create = []
                 while current_date <= end_date:
-                    MonthAchivesListModel.objects.create(
-                        Activity_instance=instance, Date=current_date
+                    achives_to_create.append(
+                        MonthAchivesListModel(Activity_instance=instance, Date=current_date)
                     )
                     current_date += timedelta(days=1)
-                    
-                # Create notification
-                
-                # if login_user != employee_id:
-                #     sender = RegistrationModel.objects.get(EmployeeId=login_user)
-                #     receiver = RegistrationModel.objects.get(EmployeeId=employee_id)
-                    # Notification.objects.create(
-                    #     sender=sender,
-                    #     receiver=receiver,
-                    #     message=f"The activity '{instance.Activity.activity_name}' was assigned to you on {timezone.localdate()} by {login_emp_obj.Name}.",
-                    # )
+                MonthAchivesListModel.objects.bulk_create(achives_to_create)
 
                 return Response({'status': 'success'}, status=status.HTTP_200_OK)
-            print("serializer.errors",serializer.errors)
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
         except EmployeeDataModel.DoesNotExist as e:
@@ -405,27 +695,27 @@ class AddNewActivitys(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
         except Exception as e:
-            print(e)
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
-    def patch(self,request,activity_id):
-
-        activity_obj=NewActivityModel.objects.filter(pk=activity_id).first()
-        new_activity_serilaizer=NewActivityModelSerializer(activity_obj,data=request.data,partial=True)
+    def patch(self, request, activity_id):
+        activity_obj = NewActivityModel.objects.filter(pk=activity_id).first()
+        new_activity_serilaizer = NewActivityModelSerializer(activity_obj, data=request.data, partial=True)
         if new_activity_serilaizer.is_valid():
-            instance=new_activity_serilaizer.save()
-            return Response("Done",status=status.HTTP_200_OK)
+            instance = new_activity_serilaizer.save()
+            return Response("Done", status=status.HTTP_200_OK)
         else:
-            return Response(new_activity_serilaizer.errors,status=status.HTTP_400_BAD_REQUEST)
+            return Response(new_activity_serilaizer.errors, status=status.HTTP_400_BAD_REQUEST)
     
-    def delete(self,request,activity_id):
-        
-        activity_obj=NewActivityModel.objects.filter(pk=activity_id).first()
+    def delete(self, request, activity_id):
+        activity_obj = NewActivityModel.objects.filter(pk=activity_id).first()
         if activity_obj:
             activity_obj.delete()
-            return Response("Done",status=status.HTTP_200_OK)
+            return Response("Done", status=status.HTTP_200_OK)
         else:
-            return Response("id not exist",status=status.HTTP_400_BAD_REQUEST)
+            return Response("id not exist", status=status.HTTP_400_BAD_REQUEST)
+
+
+
 
 class CreateNewDailyAchievedActivitys(APIView):
     def get(self, request):
@@ -705,6 +995,7 @@ class CreateNewDailyAchievedActivitys(APIView):
             return Response(str(e),status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
     def patch(self,request,id=None):
+        from django.utils import timezone
         achieved_act_id=request.GET.get("achieved_act_id")
         if achieved_act_id:
             daily_achived_obj=NewDailyAchivesModel.objects.filter(pk=achieved_act_id).first()
@@ -846,6 +1137,24 @@ class CreateNewDailyAchievedActivitys(APIView):
                     if request_data.get("interview_status") and request_data.get("interview_status") == "walkin":
                         daily_achived_obj.interview_walkin_date = timezone.localtime()
                     
+                    #29/6/26
+                    # Auto-complete pending followups when status changes
+                    if daily_achived_obj.lead_status == 'follow_up':
+                        from .models import FollowUpModel
+                        pending_fups = FollowUpModel.objects.filter(activity_record=daily_achived_obj, status='pending')
+                        for fup in pending_fups:
+                            fup.status = 'completed'
+                            fup.completed_on = timezone.localtime()
+                            #30/6/26
+                            if remarks_val:
+                                fup.notes = remarks_val
+                            fup.save()
+                        # Update lead_status to active/rejected based on status_val
+                        if status_val in ["rejected", "Rejected_by_Candidate"]:
+                            daily_achived_obj.lead_status = "rejected"
+                        else:
+                            daily_achived_obj.lead_status = "active"
+
                     if status_val:
                         daily_achived_obj.interview_status = status_val
                     if remarks_val:
@@ -876,6 +1185,74 @@ class CreateNewDailyAchievedActivitys(APIView):
                 if not daily_achived_obj:
                     return Response("id not exise",status=status.HTTP_400_BAD_REQUEST)
                 
+                #29/6/26
+                # Auto-complete pending followups when status changes
+                if daily_achived_obj.lead_status == 'follow_up':
+                    has_status_change = False
+                    new_lead_status = "active"
+                    if "interview_status" in request_data and request_data.get("interview_status"):
+                        has_status_change = True
+                        if request_data.get("interview_status") in ["rejected", "Rejected_by_Candidate"]:
+                            new_lead_status = "rejected"
+                    elif "client_status" in request_data and request_data.get("client_status"):
+                        has_status_change = True
+                        if request_data.get("client_status") == "closed":
+                            new_lead_status = "closed"
+                            
+                    if has_status_change:
+                        from .models import FollowUpModel
+                        pending_fups = FollowUpModel.objects.filter(activity_record=daily_achived_obj, status='pending')
+                        for fup in pending_fups:
+                            fup.status = 'completed'
+                            fup.completed_on = timezone.localtime()
+                            #30/6/26
+                            remarks_val = request_data.get("interview_call_remarks") or request_data.get("client_call_remarks") or request_data.get("remarks")
+                            if remarks_val:
+                                fup.notes = remarks_val
+                            fup.save()
+                        request_data["lead_status"] = new_lead_status
+                
+                #26/6/26
+                # Staged records are activated automatically if a stage/status change is detected.
+                is_staged_activation = False
+                old_parent = None
+                new_parent = None
+                if daily_achived_obj.lead_status == 'staged':
+                    has_stage_change = (
+                        ("interview_status" in request_data and request_data.get("interview_status")) or
+                        ("client_status" in request_data and request_data.get("client_status"))
+                    )
+                    
+                    if has_stage_change:
+                        employee = None
+                        if daily_achived_obj.current_day_activity and daily_achived_obj.current_day_activity.Activity_instance:
+                            employee = daily_achived_obj.current_day_activity.Activity_instance.Employee
+                        
+                        if not employee:
+                            login_emp_id = request.GET.get("login_emp_id") or request_data.get("login_user")
+                            if login_emp_id:
+                                employee = EmployeeDataModel.objects.filter(EmployeeId=login_emp_id).first()
+                                
+                        if employee:
+                            activity_name = "interview_calls"
+                            if daily_achived_obj.current_day_activity and daily_achived_obj.current_day_activity.Activity_instance and daily_achived_obj.current_day_activity.Activity_instance.Activity:
+                                activity_name = daily_achived_obj.current_day_activity.Activity_instance.Activity.activity_name
+                            
+                            old_parent, new_parent = shift_lead_to_today(daily_achived_obj, employee, activity_name)
+                            request_data["current_day_activity"] = new_parent.pk
+                            request_data["lead_status"] = "active"
+                            from django.utils import timezone
+                            request_data["Created_Date"] = timezone.now()
+                            is_staged_activation = True
+                        else:
+                            request_data["lead_status"] = "active"
+                            is_staged_activation = True
+                            old_parent = daily_achived_obj.current_day_activity
+                            new_parent = daily_achived_obj.current_day_activity
+                    else:
+                        # Ensure lead_status is not overridden to 'active' by the edit payload if no status change occurred
+                        request_data["lead_status"] = "staged"
+
                 #28/5/2026
                 # If source is updated, update the sourcing_channel accordingly (unless it was bulk uploaded or assigned)
                 if "source" in request_data and daily_achived_obj.sourcing_channel not in ["bulk_upload", "assigned"]:
@@ -893,6 +1270,22 @@ class CreateNewDailyAchievedActivitys(APIView):
                 
                 if daily_achived_activity_serializer.is_valid():
                     daily_achived_activity_serializer.save()
+                    #26/6/26
+                    # Recalculate metrics if it was activated
+                    if is_staged_activation:
+                        if old_parent:
+                            old_parent.achieved = NewDailyAchivesModel.objects.filter(
+                                current_day_activity=old_parent,
+                                lead_status='active'
+                            ).count()
+                            old_parent.save()
+                        if new_parent:
+                            new_parent.achieved = NewDailyAchivesModel.objects.filter(
+                                current_day_activity=new_parent,
+                                lead_status='active'
+                            ).count()
+                            new_parent.save()
+                            
                     return Response("achived activity changed",status=status.HTTP_200_OK)
                 else:
                     return Response(daily_achived_activity_serializer.errors,status=status.HTTP_400_BAD_REQUEST)
@@ -1041,17 +1434,619 @@ class DisplayInterviewCallsDate(APIView):
 
     
 
+# old code - occuring N+1 query
+# class DisplayEmployeeActivitys(APIView):
+#     def get(self, request, login_user=None, assigned_by=None):
+#         try:
+#             requirement = request.GET.get("requirement")
+#             activity_status=request.GET.get("activity_status")
+#             cm = request.GET.get("current_month")
+#             cy = request.GET.get("current_year")
+#             cd = request.GET.get("current_date")
 
+#             # Determine current month and year
+#             if cm and cy:
+#                 current_month = int(cm)
+#                 current_year = int(cy)
+#             else:
+#                 current_date = timezone.localdate()
+#                 current_month = current_date.month
+#                 current_year = current_date.year
+#             #14/03/2026
+#             # if cm and cy:
+#             #     try:
+#             #         if cm != "NaN" and cy != "undefined":
+#             #             current_month = int(cm)
+#             #         else:
+#             #             raise ValueError
+#             #     except (ValueError, TypeError):
+#             #         current_month = timezone.localdate().month
+
+#             #     try:
+#             #         current_year = int(cy)
+#             #     except (ValueError, TypeError):
+#             #         current_year = timezone.localdate().year
+
+#             # else:
+#             #     current_date = timezone.localdate()
+#             #     current_month = current_date.month
+#             #     current_year = current_date.year
+
+#             # Get all days in the current month
+#             _, last_day = calendar.monthrange(current_year, current_month)
+#             all_dates = [
+#                 timezone.datetime(current_year, current_month, day).date()
+#                 for day in range(1, last_day + 1)
+#             ]
+
+#             # Initialize structures
+#             interview_schedules = {date: [] for date in all_dates}
+#             walkins_schedules = {date: [] for date in all_dates}
+#             interview_not_attended = {date: [] for date in all_dates} #16/7/26
+#             screenings = {date: [] for date in all_dates}
+
+#             consider_to_client = {date: [] for date in all_dates}
+#             Internal_Hiring = {date: [] for date in all_dates}
+#             Reject = {date: [] for date in all_dates}
+#             Rejected_by_Candidate = {date: [] for date in all_dates}
+#             On_Hold = {date: [] for date in all_dates}
+#             Offers= {date: [] for date in all_dates}
+#             walkout= {date: [] for date in all_dates}
+#             Offer_did_not_accept = {date: [] for date in all_dates}
+
+#             # Fetch activities based on resolved target employees (role-based)
+#             login_emp_id = login_user if login_user else assigned_by
+#             target_emp_id = request.GET.get("target_emp_id")
+            
+#             try:
+#                 current_user = EmployeeDataModel.objects.get(EmployeeId=login_emp_id)
+#             except EmployeeDataModel.DoesNotExist:
+#                 return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
+            
+#             # Role-Based Filters for manager view vs individual view
+#             if target_emp_id:
+#                 target_employees_q = Q(EmployeeId=target_emp_id)
+#             else:
+#                 target_employees_q = Q(pk=current_user.pk)
+#                 if current_user.Designation in ['Admin', 'HR', 'Recruiter']:
+#                     if current_user.Designation == 'Admin':
+#                         target_employees_q = Q()
+#                     else:
+#                         team_members_q = Q(Reporting_To=current_user)
+#                         if current_user.Designation == 'HR':
+#                             target_employees_q = team_members_q | Q(Designation='Recruiter') | Q(pk=current_user.pk)
+#                         elif current_user.Designation == 'Recruiter':
+#                             target_employees_q = team_members_q | Q(pk=current_user.pk)
+                            
+#             target_employees = EmployeeDataModel.objects.filter(target_employees_q)
+            
+#             activities = NewActivityModel.objects.filter(
+#                 Employee__in=target_employees
+#             )
+
+#             # for activity in activities:
+# #     if activity.Activity.activity_name == "interview_calls":
+# #         daily_achievements = MonthAchivesListModel.objects.filter(Activity_instance=activity)
+
+# #         for daily_achievement in daily_achievements:
+# #             # interview_data = NewDailyAchivesModel.objects.filter(
+# #             #     current_day_activity=daily_achievement.pk,
+# #             #     interview_scheduled_date__isnull=False
+# #             # )
+
+# #             # filtered_interview_data = [
+# #             #     data for data in interview_data
+# #             #     if localtime(data.interview_scheduled_date).month == current_month
+# #             #     and localtime(data.interview_scheduled_date).year == current_year
+# #             # ]
+
+# #             # # Add interview data
+# #             # for interview in filtered_interview_data:
+# #             #     date_key = timezone.localtime(interview.interview_scheduled_date).date()
+# #             #     interview_schedules[date_key].append(NewDailyAchivesModelSerializer(interview).data)
+
+# #             date_key = daily_achievement.Date
+
+# #             # Fetch all daily records for this day
+# #             # Original code (commented out for reference):
+# #             # all_daily_records = NewDailyAchivesModel.objects.filter(
+# #             #     current_day_activity=daily_achievement.pk
+# #             # )
+# #             all_daily_records = NewDailyAchivesModel.objects.filter(
+# #                 current_day_activity=daily_achievement.pk,
+# #             ).exclude(lead_status='staged')  # 17/04/2026
+
+# #             for record in all_daily_records:
+
+# #                 # Interview Schedules
+# #                 # if record.interview_scheduled_date and localtime(record.interview_scheduled_date).month == current_month and localtime(record.interview_scheduled_date).year == current_year:
+# #                 # 17/04/2026
+# #                 if (
+# #                     record.interview_scheduled_date
+# #                     and record.lead_status != 'staged'
+# #                     and localtime(record.interview_scheduled_date).month == current_month
+# #                     and localtime(record.interview_scheduled_date).year == current_year
+# #                 ):
+# #                     interview_schedules[
+# #                         timezone.localtime(record.interview_scheduled_date).date()
+# #                     ].append(serialized_record)
+
+# #                 # # Walk-in data
+# #                 # walkin_data = NewDailyAchivesModel.objects.filter(
+# #                 #     current_day_activity=daily_achievement.pk,
+# #                 #     interview_walkin_date__isnull=False
+# #                 # )
+
+# #                 # filtered_walkin_data = [
+# #                 #     data for data in walkin_data
+# #                 #     if localtime(data.interview_walkin_date).month == current_month
+# #                 #     and localtime(data.interview_walkin_date).year == current_year
+# #                 # ]
+
+# #                 # # Add walk-in data
+# #                 # for walkin in filtered_walkin_data:
+# #                 #     date_key = timezone.localtime(walkin.interview_walkin_date).date()
+# #                 #     walkins_schedules[date_key].append(NewDailyAchivesModelSerializer(walkin).data)
+
+# #                 # Walk-ins
+# #                 # if record.interview_walkin_date and localtime(record.interview_walkin_date).month == current_month and localtime(record.interview_walkin_date).year == current_year:
+# #                 # 17/04/2026
+# #                 if (
+# #                     record.interview_walkin_date
+# #                     and record.lead_status != 'staged'
+# #                     and localtime(record.interview_walkin_date).month == current_month
+# #                     and localtime(record.interview_walkin_date).year == current_year
+# #                 ):
+# #                     walkins_schedules[
+# #                         timezone.localtime(record.interview_walkin_date).date()
+# #                     ].append(serialized_record)
+
+# #                 # Detailed Statuses (Reject, To Client, etc.)
+# #                 # if record.lead_status != 'staged':
+# #                 # 17/04/2026
+# #                 if record.lead_status != 'staged':
+# #                     if record.interview_status == "rejected":
+# #                         Reject[date_key].append(serialized_record)
+
+# #                     elif record.interview_status == "to_client":
+# #                         consider_to_client[date_key].append(serialized_record)
+
+# #                     elif record.interview_status == "Rejected_by_Candidate":
+# #                         Rejected_by_Candidate[date_key].append(serialized_record)
+
+# #                     elif record.interview_status == "will_revert_back":
+# #                         On_Hold[date_key].append(serialized_record)
+
+# #                     Internal_Hiring[date_key].append(serialized_record)
+
+#             # Use range filters for better database compatibility (especially MySQL/SQLite)
+#             start_date = timezone.datetime(current_year, current_month, 1)
+#             if current_month == 12:
+#                 next_month_date = timezone.datetime(current_year + 1, 1, 1)
+#             else:
+#                 next_month_date = timezone.datetime(current_year, current_month + 1, 1)
+            
+#             # Make dates aware to match DB if USE_TZ is True
+#             if timezone.is_aware(timezone.now()):
+#                 start_date = timezone.make_aware(start_date)
+#                 next_month_date = timezone.make_aware(next_month_date)
+
+#             all_relevant_records = NewDailyAchivesModel.objects.filter(
+#                 current_day_activity__Activity_instance__Employee__in=target_employees
+#             ).filter(
+#                 Q(Created_Date__gte=start_date, Created_Date__lt=next_month_date) |
+#                 Q(interview_walkin_date__gte=start_date, interview_walkin_date__lt=next_month_date) |
+#                 Q(interview_scheduled_date__gte=start_date, interview_scheduled_date__lt=next_month_date)
+#             #26/6/26
+#             ).select_related(
+#                 'current_day_activity__Activity_instance__Employee',
+#                 'current_day_activity__Activity_instance__activity_assigned_by',
+#                 'current_day_activity__Activity_instance__Activity',
+#                 'assigned_requirement__requirement__client'
+#             #17/7/26 - N+1
+#             # ).prefetch_related(
+#             #     'followups'
+#             ).prefetch_related(
+#                 'followups'
+#             ).distinct().exclude(lead_status='staged')
+
+#             for record in all_relevant_records:
+#                 serialized_record = NewDailyAchivesModelSerializer(record).data
+                
+#                 # Pre-calculate common dates
+#                 created_dt = timezone.localtime(record.Created_Date)
+#                 is_created_this_month = (created_dt.month == current_month and created_dt.year == current_year)
+#                 created_date = created_dt.date()
+
+#                 # 1. Interview Scheduled
+#                 sch_date = None
+#                 if record.interview_scheduled_date:
+#                     sch_dt = timezone.localtime(record.interview_scheduled_date)
+#                     if sch_dt.month == current_month and sch_dt.year == current_year:
+#                         sch_date = sch_dt.date()
+#                 elif record.interview_status == "interview_scheduled" and is_created_this_month:
+#                     sch_date = created_date
+                
+#                 if sch_date and sch_date in interview_schedules:
+#                     interview_schedules[sch_date].append(serialized_record)
+
+#                 # 2. Walk-ins (Attended)
+#                 walkin_date = None
+#                 if record.interview_walkin_date:
+#                     walkin_dt = timezone.localtime(record.interview_walkin_date)
+#                     if walkin_dt.month == current_month and walkin_dt.year == current_year:
+#                         walkin_date = walkin_dt.date()
+#                 elif record.interview_status == "walkin" and is_created_this_month:
+#                     walkin_date = created_date
+#                 #15/7/26
+#                 elif getattr(record, 'interview_attendance', None) == 'Attended' and is_created_this_month:
+#                     # Fallback: count as attended based on interview_attendance flag
+#                     walkin_date = created_date
+                
+#                 if walkin_date and walkin_date in walkins_schedules:
+#                     walkins_schedules[walkin_date].append(serialized_record)
+
+#                 #16/7/26
+#                 # 2.5. Interview Not Attended (Scheduled but did not attend)
+#                 # Matches if scheduled date falls on date, and candidate did not show up, AND the scheduled time has already passed
+#                 if sch_date:
+#                     # Determine if they attended. They attended if they have a walk-in date OR walkin status OR 'Attended' attendance
+#                     has_attended = (
+#                         record.interview_walkin_date is not None
+#                         or record.interview_status == "walkin"
+#                         or getattr(record, 'interview_attendance', None) == 'Attended'
+#                     )
+#                     # Check if the scheduled time has passed
+#                     has_passed = False
+#                     if record.interview_scheduled_date:
+#                         has_passed = (timezone.now() > record.interview_scheduled_date)
+#                     elif is_created_this_month:
+#                         # Fallback for interview_status="interview_scheduled" but no datetime:
+#                         # If the created date is yesterday or older, it has passed
+#                         has_passed = (timezone.localdate() > created_date)
+
+#                     if not has_attended and has_passed:
+#                         if sch_date in interview_not_attended:
+#                             interview_not_attended[sch_date].append(serialized_record)
+
+#                 # Categorize other statuses
+#                 rec_status = record.interview_status
+                
+#                 if rec_status == "rejected":
+#                     if is_created_this_month and created_date in Reject:
+#                         Reject[created_date].append(serialized_record)
+
+#                 elif rec_status == "to_client":
+#                     if is_created_this_month and created_date in consider_to_client:
+#                         consider_to_client[created_date].append(serialized_record)
+
+#                 if record.candidate_for == "Internal_Hiring":
+#                     if is_created_this_month and created_date in Internal_Hiring:
+#                         Internal_Hiring[created_date].append(serialized_record)
+
+#                 if rec_status == "Rejected_by_Candidate":
+#                     if is_created_this_month and created_date in Rejected_by_Candidate:
+#                         Rejected_by_Candidate[created_date].append(serialized_record)
+
+#                 elif rec_status == "will_revert_back":
+#                     if is_created_this_month and created_date in On_Hold:
+#                         On_Hold[created_date].append(serialized_record)
+
+#                 elif rec_status == "offer":
+#                     if is_created_this_month and created_date in Offers:
+#                         Offers[created_date].append(serialized_record)
+
+#                 elif rec_status == "Offer_did_not_accept":
+#                     if is_created_this_month and created_date in Offer_did_not_accept:
+#                         Offer_did_not_accept[created_date].append(serialized_record)
+
+#                 elif rec_status == "walkout":
+#                     if is_created_this_month and created_date in walkout:
+#                         walkout[created_date].append(serialized_record)
+
+#             # Screening reviews
+#             screening_review = Review.objects.filter(
+#                 ~Q(screeingreview=None),
+#                 ~Q(screeingreview__isnull=True),
+#                 ReviewedBy__in=target_employees,
+#                 ReviewedDate__month=current_month,
+#                 ReviewedDate__year=current_year
+#             ).select_related('CandidateId') #16/7/26 - by adding this select_related we are reducing the number of queries, from 178 queries to 2 queries
+
+#             for screening in screening_review:
+#                 screenings[screening.ReviewedDate].append(ActivityScreeningReviewSerializer(screening).data)
+            
+#             for candidate in screening_review:
+               
+#                 # candidate_final_result=HRFinalStatusModel.objects.filter(
+#                 #     CandidateId=candidate.CandidateId,
+#                 #     Final_Result=candidate.CandidateId.Final_Results,
+#                 #     ReviewedOn__month=current_month,
+#                 #     ReviewedOn__year=current_year,
+#                 #     ).first()
+                
+#                 candidate_final_result=None
+#                 HR_final_result=HRFinalStatusModel.objects.filter(
+#                     CandidateId=candidate.CandidateId,
+#                     Final_Result=candidate.CandidateId.Final_Results)
+                
+#                 for final_result in HR_final_result:
+#                     reviewed_on_local = localtime(final_result.ReviewedOn)  # Convert ReviewedOn to local time
+#                     if reviewed_on_local.month == current_month and reviewed_on_local.year == current_year:
+#                         candidate_final_result = final_result
+#                         break
+                
+#                 if candidate_final_result and candidate_final_result.Final_Result == "consider_to_client":
+#                     print(candidate_final_result.Final_Result)
+#                     consider_to_client_serilaizer=CandidateApplicationSerializer(candidate_final_result.CandidateId).data
+#                     consider_to_client[timezone.localtime(candidate_final_result.ReviewedOn).date()].append(consider_to_client_serilaizer)
+                    
+#                 elif candidate.Screening_Status == "to_client":
+#                     consider_to_client_serilaizer=CandidateApplicationSerializer(candidate.CandidateId).data
+#                     consider_to_client[candidate.ReviewedDate].append(consider_to_client_serilaizer)
+
+#                 elif candidate_final_result and candidate_final_result.Final_Result == "Internal_Hiring":
+#                     internal_hiring_serilaizer=CandidateApplicationSerializer(candidate_final_result.CandidateId).data
+#                     Internal_Hiring[timezone.localtime(candidate_final_result.ReviewedOn).date()].append(internal_hiring_serilaizer)
+
+#                 elif candidate_final_result and candidate_final_result.Final_Result == "Reject":
+#                     reject_serilaizer=CandidateApplicationSerializer(candidate_final_result.CandidateId).data
+#                     Reject[timezone.localtime(candidate_final_result.ReviewedOn).date()].append(reject_serilaizer)
+                
+#                 elif candidate.Screening_Status == "rejected":
+#                     print("rejected")
+#                     reject_serilaizer=CandidateApplicationSerializer(candidate.CandidateId).data
+#                     Reject[candidate.ReviewedDate].append(reject_serilaizer)
+
+#                 elif candidate_final_result and candidate_final_result.Final_Result == "Rejected_by_Candidate":
+#                     rejected_by_candidate_serilaizer=CandidateApplicationSerializer(candidate_final_result.CandidateId).data
+#                     Rejected_by_Candidate[timezone.localtime(candidate_final_result.ReviewedOn).date()].append(rejected_by_candidate_serilaizer)
+
+#                 elif candidate.Screening_Status == "Rejected_by_Candidate":
+#                     rejected_by_candidate_serilaizer=CandidateApplicationSerializer(candidate.CandidateId).data
+#                     Rejected_by_Candidate[candidate.ReviewedDate].append(rejected_by_candidate_serilaizer)
+
+#                 elif candidate_final_result and candidate_final_result.Final_Result == "On_Hold":
+#                     on_hold_serilaizer=CandidateApplicationSerializer(candidate_final_result.CandidateId).data
+#                     On_Hold[timezone.localtime(candidate_final_result.ReviewedOn).date()].append(on_hold_serilaizer)
+
+#                 elif candidate.CandidateId.Final_Results == "offered":
+#                     offered_candidate=None
+#                     offered_candidate_obj= OfferLetterModel.objects.filter(CandidateId=candidate.CandidateId,
+#                                                                         Letter_sended_status=True)
+#                     for final_result in offered_candidate_obj:
+#                         offered_on_local = localtime(final_result.OfferedDate)  # Convert ReviewedOn to local time
+#                         if offered_on_local.month == current_month and offered_on_local.year == current_year:
+#                             offered_candidate = final_result
+#                             break
+
+#                     if offered_candidate:
+#                         offered_serilaizer=CandidateApplicationSerializer(offered_candidate.CandidateId).data
+#                         Offers[timezone.localtime(offered_candidate.OfferedDate).date()].append(offered_serilaizer)
+
+#                 elif candidate_final_result and candidate_final_result.Final_Result == "Offer_did_not_accept":
+#                     offered_rejections_serilaizer=CandidateApplicationSerializer(candidate_final_result.CandidateId).data
+#                     Offer_did_not_accept[timezone.localtime(candidate_final_result.ReviewedOn).date()].append(offered_rejections_serilaizer)
+
+#                 elif candidate.Screening_Status == "walkout":
+#                     walkout_serilaizer=CandidateApplicationSerializer(candidate.CandidateId).data
+#                     walkout[candidate.ReviewedDate].append(walkout_serilaizer)
+
+                
+#             # Full month logic
+#             if requirement == "full_month":
+#                 # Flatten interview schedules
+#                 if activity_status =="interview_schedule":
+#                     all_interviews = [
+#                         interview for date_interviews in interview_schedules.values() for interview in date_interviews
+#                     ]
+#                     return Response(
+#                             [{
+#                                 "activity_id": 1,
+#                                 "per_day_achievements": all_interviews}]    
+#                     )
+
+#                 # Flatten walk-in schedules
+#                 if activity_status =="walkins":
+#                     all_walkins = [
+#                         walkin for date_walkins in walkins_schedules.values() for walkin in date_walkins
+#                     ]
+#                     return Response(
+#                             [{
+#                                 "activity_id": 1,
+#                                 "per_day_achievements": all_walkins}])
+
+#                 # Flatten screenings
+#                 if activity_status =="screening":
+
+#                     all_screenings = [
+#                         screen for date_screenings in screenings.values() for screen in date_screenings
+#                     ]
+#                     return Response(
+#                         [{
+#                                 "activity_id": 1,
+#                                 "per_day_achievements": all_screenings}])
+                
+#                 if activity_status =="consider_to_client":
+#                     all_clients = [
+#                         clients for date_clients in consider_to_client.values() for clients in date_clients
+#                     ]
+
+#                     return Response(
+#                             [{
+#                                 "activity_id": 1,
+#                                 "per_day_achievements": all_clients}])
+                
+#                 if activity_status =="Internal_Hiring":
+#                     all_internal_hiring = [
+#                         internal_hiring for date_internal_hiring in Internal_Hiring.values() for internal_hiring in date_internal_hiring
+#                     ]
+#                     return Response(
+#                             [{
+#                                 "activity_id": 1,
+#                                 "per_day_achievements": all_internal_hiring}])
+                
+#                 if activity_status =="Reject":
+
+#                     all_Rejects = [
+#                         Rejections for date_Reject in Reject.values() for Rejections in date_Reject
+#                     ]
+#                     return Response(
+#                             [{
+#                                 "activity_id": 1,
+#                                 "per_day_achievements": all_Rejects}])
+
+
+#                 if activity_status =="Rejected_by_Candidate":
+
+#                     all_Rejects_by_Candidate = [
+#                         candidate_rejection for date_Rejected_by_Candidate in Rejected_by_Candidate.values() for candidate_rejection in date_Rejected_by_Candidate
+#                     ]
+
+#                     return Response(
+#                             [{
+#                                 "activity_id": 1,
+#                                 "per_day_achievements": all_Rejects_by_Candidate}])
+
+#                 if activity_status =="On_Hold":
+
+#                     all_On_Hold = [
+#                         hold_candidates for date_On_Hold in On_Hold.values() for hold_candidates in date_On_Hold
+#                     ]
+
+#                     return Response(
+#                             [{
+#                                 "activity_id": 1,
+#                                 "per_day_achievements": all_On_Hold}])
+
+#                 if activity_status =="walkout":
+
+#                     all_walkout = [
+#                         walkout_candidates for date_walkout in walkout.values() for walkout_candidates in date_walkout
+#                     ]
+
+#                     return Response(
+#                             [{
+#                                 "activity_id": 1,
+#                                 "per_day_achievements": all_walkout}])
+                
+#                 if activity_status =="Offers":
+
+#                     all_Offers = [
+#                         Offers_candidates for date_Offers in Offers.values() for Offers_candidates in date_Offers
+#                     ]
+
+#                     return Response(
+#                             [{
+#                                 "activity_id": 1,
+#                                 "per_day_achievements": all_Offers}])
+                
+#                 if activity_status == "Offer_did_not_accept":
+
+#                     all_Offer_did_not_accept = [
+#                         Offers_rejects_candidates for date_Offers_rejects in Offer_did_not_accept.values() for Offers_rejects_candidates in date_Offers_rejects
+#                     ]
+#                     return Response(
+#                             [{
+#                                 "activity_id": 1,
+#                                 "per_day_achievements": all_Offer_did_not_accept}])
+                   
+#             # Default behavior: group by date
+
+#             interview_schedules_list = [
+#                 {"activity_id": 1, "date": date, "interview_schedule_data": interview_schedules[date]}
+#                 for date in sorted(interview_schedules.keys())
+#             ]
+
+#             walkins_schedules_list = [
+#                 {"activity_id": 1, "date": date, "walkin_schedule_data": walkins_schedules[date]}
+#                 for date in sorted(walkins_schedules.keys())
+#             ]
+
+#             screening_conducted_list = [
+#                 {"activity_id": 1, "date": date, "screening_conducted_data": screenings[date]}
+#                 for date in sorted(screenings.keys())
+#             ]
+
+#             consider_to_client_list = [
+#                 {"activity_id": 1, "date": date, "consider_to_client_data": consider_to_client[date]}
+#                 for date in sorted(consider_to_client.keys())
+#             ]
+
+#             internal_hiring_list = [
+#                 {"activity_id": 1, "date": date, "internal_hiring_data": Internal_Hiring[date]}
+#                 for date in sorted(Internal_Hiring.keys())
+#             ]
+
+#             Rejections_list = [
+#                 {"activity_id": 1, "date": date, "Rejections_data": Reject[date]}
+#                 for date in sorted(Reject.keys())
+#             ]
+
+#             Rejected_by_Candidate_list = [
+#                 {"activity_id": 1, "date": date, "Rejected_by_Candidate_data": Rejected_by_Candidate[date]}
+#                 for date in sorted(Rejected_by_Candidate.keys())
+#             ]
+
+#             On_Hold_list = [
+#                 {"activity_id": 1, "date": date, "On_Hold_data": On_Hold[date]}
+#                 for date in sorted(On_Hold.keys())
+#             ]
+
+#             offers_list = [
+#                 {"activity_id": 1, "date": date, "offers_data": Offers[date]}
+#                 for date in sorted(Offers.keys())
+#             ]
+
+#             offer_rejected_list = [
+#                 {"activity_id": 1, "date": date, "offers_tejects_data": Offer_did_not_accept[date]}
+#                 for date in sorted(Offer_did_not_accept.keys())
+#             ]
+
+#             walkout_list = [
+#                 {"activity_id": 1, "date": date, "walkouts_data": walkout[date]}
+#                 for date in sorted(walkout.keys())
+#             ]
+
+#             #16/7/26
+#             interview_not_attended_list = [
+#                 {"activity_id": 1, "date": date, "not_attended_data": interview_not_attended[date]}
+#                 for date in sorted(interview_not_attended.keys())
+#             ]
+
+#             return Response(
+#                 {
+#                     "interview_schedules": interview_schedules_list,
+#                     "walkins_schedules": walkins_schedules_list,
+#                     "interview_not_attended": interview_not_attended_list, #16/7/26
+#                     "screening": screening_conducted_list,
+#                     "walkout": walkout_list,
+#                     "Reject" : Rejections_list,
+#                     "Rejected_by_Candidate": Rejected_by_Candidate_list,
+#                     "consider_to_client" : consider_to_client_list,
+#                     "On_Hold": On_Hold_list,
+#                     "Internal_Hiring" : internal_hiring_list,
+#                     "Offers" : offers_list,
+#                     "Offer_did_not_accept":offer_rejected_list,
+#                 },
+#                 status=status.HTTP_200_OK,
+#             )
+        
+#         except Exception as e:
+#             return Response(str(e), status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
+
+#17/7/26 - N+1 - FIXED (reference studio)
 class DisplayEmployeeActivitys(APIView):
     def get(self, request, login_user=None, assigned_by=None):
         try:
             requirement = request.GET.get("requirement")
-            activity_status=request.GET.get("activity_status")
+            activity_status = request.GET.get("activity_status")
             cm = request.GET.get("current_month")
             cy = request.GET.get("current_year")
-            cd = request.GET.get("current_date")
 
-            # Determine current month and year
             if cm and cy:
                 current_month = int(cm)
                 current_year = int(cy)
@@ -1059,36 +2054,16 @@ class DisplayEmployeeActivitys(APIView):
                 current_date = timezone.localdate()
                 current_month = current_date.month
                 current_year = current_date.year
-            #14/03/2026
-            # if cm and cy:
-            #     try:
-            #         if cm != "NaN" and cy != "undefined":
-            #             current_month = int(cm)
-            #         else:
-            #             raise ValueError
-            #     except (ValueError, TypeError):
-            #         current_month = timezone.localdate().month
 
-            #     try:
-            #         current_year = int(cy)
-            #     except (ValueError, TypeError):
-            #         current_year = timezone.localdate().year
-
-            # else:
-            #     current_date = timezone.localdate()
-            #     current_month = current_date.month
-            #     current_year = current_date.year
-
-            # Get all days in the current month
             _, last_day = calendar.monthrange(current_year, current_month)
             all_dates = [
                 timezone.datetime(current_year, current_month, day).date()
                 for day in range(1, last_day + 1)
             ]
 
-            # Initialize structures
             interview_schedules = {date: [] for date in all_dates}
             walkins_schedules = {date: [] for date in all_dates}
+            interview_not_attended = {date: [] for date in all_dates}
             screenings = {date: [] for date in all_dates}
 
             consider_to_client = {date: [] for date in all_dates}
@@ -1096,11 +2071,10 @@ class DisplayEmployeeActivitys(APIView):
             Reject = {date: [] for date in all_dates}
             Rejected_by_Candidate = {date: [] for date in all_dates}
             On_Hold = {date: [] for date in all_dates}
-            Offers= {date: [] for date in all_dates}
-            walkout= {date: [] for date in all_dates}
+            Offers = {date: [] for date in all_dates}
+            walkout = {date: [] for date in all_dates}
             Offer_did_not_accept = {date: [] for date in all_dates}
 
-            # Fetch activities based on resolved target employees (role-based)
             login_emp_id = login_user if login_user else assigned_by
             target_emp_id = request.GET.get("target_emp_id")
             
@@ -1109,7 +2083,6 @@ class DisplayEmployeeActivitys(APIView):
             except EmployeeDataModel.DoesNotExist:
                 return Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
             
-            # Role-Based Filters for manager view vs individual view
             if target_emp_id:
                 target_employees_q = Q(EmployeeId=target_emp_id)
             else:
@@ -1125,114 +2098,13 @@ class DisplayEmployeeActivitys(APIView):
                             target_employees_q = team_members_q | Q(pk=current_user.pk)
                             
             target_employees = EmployeeDataModel.objects.filter(target_employees_q)
-            
-            activities = NewActivityModel.objects.filter(
-                Employee__in=target_employees
-            )
 
-            # for activity in activities:
-#     if activity.Activity.activity_name == "interview_calls":
-#         daily_achievements = MonthAchivesListModel.objects.filter(Activity_instance=activity)
-
-#         for daily_achievement in daily_achievements:
-#             # interview_data = NewDailyAchivesModel.objects.filter(
-#             #     current_day_activity=daily_achievement.pk,
-#             #     interview_scheduled_date__isnull=False
-#             # )
-
-#             # filtered_interview_data = [
-#             #     data for data in interview_data
-#             #     if localtime(data.interview_scheduled_date).month == current_month
-#             #     and localtime(data.interview_scheduled_date).year == current_year
-#             # ]
-
-#             # # Add interview data
-#             # for interview in filtered_interview_data:
-#             #     date_key = timezone.localtime(interview.interview_scheduled_date).date()
-#             #     interview_schedules[date_key].append(NewDailyAchivesModelSerializer(interview).data)
-
-#             date_key = daily_achievement.Date
-
-#             # Fetch all daily records for this day
-#             # Original code (commented out for reference):
-#             # all_daily_records = NewDailyAchivesModel.objects.filter(
-#             #     current_day_activity=daily_achievement.pk
-#             # )
-#             all_daily_records = NewDailyAchivesModel.objects.filter(
-#                 current_day_activity=daily_achievement.pk,
-#             ).exclude(lead_status='staged')  # 17/04/2026
-
-#             for record in all_daily_records:
-
-#                 # Interview Schedules
-#                 # if record.interview_scheduled_date and localtime(record.interview_scheduled_date).month == current_month and localtime(record.interview_scheduled_date).year == current_year:
-#                 # 17/04/2026
-#                 if (
-#                     record.interview_scheduled_date
-#                     and record.lead_status != 'staged'
-#                     and localtime(record.interview_scheduled_date).month == current_month
-#                     and localtime(record.interview_scheduled_date).year == current_year
-#                 ):
-#                     interview_schedules[
-#                         timezone.localtime(record.interview_scheduled_date).date()
-#                     ].append(serialized_record)
-
-#                 # # Walk-in data
-#                 # walkin_data = NewDailyAchivesModel.objects.filter(
-#                 #     current_day_activity=daily_achievement.pk,
-#                 #     interview_walkin_date__isnull=False
-#                 # )
-
-#                 # filtered_walkin_data = [
-#                 #     data for data in walkin_data
-#                 #     if localtime(data.interview_walkin_date).month == current_month
-#                 #     and localtime(data.interview_walkin_date).year == current_year
-#                 # ]
-
-#                 # # Add walk-in data
-#                 # for walkin in filtered_walkin_data:
-#                 #     date_key = timezone.localtime(walkin.interview_walkin_date).date()
-#                 #     walkins_schedules[date_key].append(NewDailyAchivesModelSerializer(walkin).data)
-
-#                 # Walk-ins
-#                 # if record.interview_walkin_date and localtime(record.interview_walkin_date).month == current_month and localtime(record.interview_walkin_date).year == current_year:
-#                 # 17/04/2026
-#                 if (
-#                     record.interview_walkin_date
-#                     and record.lead_status != 'staged'
-#                     and localtime(record.interview_walkin_date).month == current_month
-#                     and localtime(record.interview_walkin_date).year == current_year
-#                 ):
-#                     walkins_schedules[
-#                         timezone.localtime(record.interview_walkin_date).date()
-#                     ].append(serialized_record)
-
-#                 # Detailed Statuses (Reject, To Client, etc.)
-#                 # if record.lead_status != 'staged':
-#                 # 17/04/2026
-#                 if record.lead_status != 'staged':
-#                     if record.interview_status == "rejected":
-#                         Reject[date_key].append(serialized_record)
-
-#                     elif record.interview_status == "to_client":
-#                         consider_to_client[date_key].append(serialized_record)
-
-#                     elif record.interview_status == "Rejected_by_Candidate":
-#                         Rejected_by_Candidate[date_key].append(serialized_record)
-
-#                     elif record.interview_status == "will_revert_back":
-#                         On_Hold[date_key].append(serialized_record)
-
-#                     Internal_Hiring[date_key].append(serialized_record)
-
-            # Use range filters for better database compatibility (especially MySQL/SQLite)
             start_date = timezone.datetime(current_year, current_month, 1)
             if current_month == 12:
                 next_month_date = timezone.datetime(current_year + 1, 1, 1)
             else:
                 next_month_date = timezone.datetime(current_year, current_month + 1, 1)
             
-            # Make dates aware to match DB if USE_TZ is True
             if timezone.is_aware(timezone.now()):
                 start_date = timezone.make_aware(start_date)
                 next_month_date = timezone.make_aware(next_month_date)
@@ -1243,12 +2115,19 @@ class DisplayEmployeeActivitys(APIView):
                 Q(Created_Date__gte=start_date, Created_Date__lt=next_month_date) |
                 Q(interview_walkin_date__gte=start_date, interview_walkin_date__lt=next_month_date) |
                 Q(interview_scheduled_date__gte=start_date, interview_scheduled_date__lt=next_month_date)
+            ).select_related(
+                'current_day_activity__Activity_instance__Employee',
+                'current_day_activity__Activity_instance__activity_assigned_by',
+                'current_day_activity__Activity_instance__Activity',
+                'assigned_requirement__requirement__client'
+            ).prefetch_related(
+                'followups' # Added prefetch here to avoid serializer DB queries
             ).distinct().exclude(lead_status='staged')
 
-            for record in all_relevant_records:
-                serialized_record = NewDailyAchivesModelSerializer(record).data
-                
-                # Pre-calculate common dates
+            # Bulk serialize achievements upfront to save massive instantiation overhead
+            serialized_records_list = NewDailyAchivesModelSerializer(all_relevant_records, many=True).data
+            
+            for record, serialized_record in zip(all_relevant_records, serialized_records_list):
                 created_dt = timezone.localtime(record.Created_Date)
                 is_created_this_month = (created_dt.month == current_month and created_dt.year == current_year)
                 created_date = created_dt.date()
@@ -1273,9 +2152,28 @@ class DisplayEmployeeActivitys(APIView):
                         walkin_date = walkin_dt.date()
                 elif record.interview_status == "walkin" and is_created_this_month:
                     walkin_date = created_date
+                elif getattr(record, 'interview_attendance', None) == 'Attended' and is_created_this_month:
+                    walkin_date = created_date
                 
                 if walkin_date and walkin_date in walkins_schedules:
                     walkins_schedules[walkin_date].append(serialized_record)
+
+                # 3. Interview Not Attended
+                if sch_date:
+                    has_attended = (
+                        record.interview_walkin_date is not None
+                        or record.interview_status == "walkin"
+                        or getattr(record, 'interview_attendance', None) == 'Attended'
+                    )
+                    has_passed = False
+                    if record.interview_scheduled_date:
+                        has_passed = (timezone.now() > record.interview_scheduled_date)
+                    elif is_created_this_month:
+                        has_passed = (timezone.localdate() > created_date)
+
+                    if not has_attended and has_passed:
+                        if sch_date in interview_not_attended:
+                            interview_not_attended[sch_date].append(serialized_record)
 
                 # Categorize other statuses
                 rec_status = record.interview_status
@@ -1319,284 +2217,223 @@ class DisplayEmployeeActivitys(APIView):
                 ReviewedBy__in=target_employees,
                 ReviewedDate__month=current_month,
                 ReviewedDate__year=current_year
-            )
+            ).select_related('CandidateId')
+
+            # Fetch Candidates related records in bulk to avoid N+1 queries in loop
+            candidate_ids = [review.CandidateId_id for review in screening_review if review.CandidateId_id]
+
+            hr_final_statuses = HRFinalStatusModel.objects.filter(
+                CandidateId_id__in=candidate_ids
+            ).select_related('CandidateId')
+
+            # Map candidate_id -> list of final status records
+            hr_status_map = defaultdict(list)
+            for status_obj in hr_final_statuses:
+                hr_status_map[status_obj.CandidateId_id].append(status_obj)
+
+            offer_letters = OfferLetterModel.objects.filter(
+                CandidateId_id__in=candidate_ids,
+                Letter_sended_status=True
+            ).select_related('CandidateId')
+
+            # Map candidate_id -> list of offer letters
+            offer_letter_map = defaultdict(list)
+            for offer in offer_letters:
+                offer_letter_map[offer.CandidateId_id].append(offer)
 
             for screening in screening_review:
                 screenings[screening.ReviewedDate].append(ActivityScreeningReviewSerializer(screening).data)
             
             for candidate in screening_review:
-               
-                # candidate_final_result=HRFinalStatusModel.objects.filter(
-                #     CandidateId=candidate.CandidateId,
-                #     Final_Result=candidate.CandidateId.Final_Results,
-                #     ReviewedOn__month=current_month,
-                #     ReviewedOn__year=current_year,
-                #     ).first()
-                
-                candidate_final_result=None
-                HR_final_result=HRFinalStatusModel.objects.filter(
-                    CandidateId=candidate.CandidateId,
-                    Final_Result=candidate.CandidateId.Final_Results)
+                candidate_id = candidate.CandidateId_id if candidate.CandidateId else None
+                if not candidate_id:
+                    continue
+
+                # Fetch candidate final result in RAM memory instead of running a DB Query
+                candidate_final_result = None
+                HR_final_result = hr_status_map.get(candidate_id, [])
                 
                 for final_result in HR_final_result:
-                    reviewed_on_local = localtime(final_result.ReviewedOn)  # Convert ReviewedOn to local time
+                    reviewed_on_local = localtime(final_result.ReviewedOn)
                     if reviewed_on_local.month == current_month and reviewed_on_local.year == current_year:
-                        candidate_final_result = final_result
-                        break
+                        if final_result.Final_Result == candidate.CandidateId.Final_Results:
+                            candidate_final_result = final_result
+                            break
                 
                 if candidate_final_result and candidate_final_result.Final_Result == "consider_to_client":
-                    print(candidate_final_result.Final_Result)
-                    consider_to_client_serilaizer=CandidateApplicationSerializer(candidate_final_result.CandidateId).data
+                    consider_to_client_serilaizer = CandidateApplicationSerializer(candidate_final_result.CandidateId).data
                     consider_to_client[timezone.localtime(candidate_final_result.ReviewedOn).date()].append(consider_to_client_serilaizer)
                     
                 elif candidate.Screening_Status == "to_client":
-                    consider_to_client_serilaizer=CandidateApplicationSerializer(candidate.CandidateId).data
+                    consider_to_client_serilaizer = CandidateApplicationSerializer(candidate.CandidateId).data
                     consider_to_client[candidate.ReviewedDate].append(consider_to_client_serilaizer)
 
                 elif candidate_final_result and candidate_final_result.Final_Result == "Internal_Hiring":
-                    internal_hiring_serilaizer=CandidateApplicationSerializer(candidate_final_result.CandidateId).data
+                    internal_hiring_serilaizer = CandidateApplicationSerializer(candidate_final_result.CandidateId).data
                     Internal_Hiring[timezone.localtime(candidate_final_result.ReviewedOn).date()].append(internal_hiring_serilaizer)
 
                 elif candidate_final_result and candidate_final_result.Final_Result == "Reject":
-                    reject_serilaizer=CandidateApplicationSerializer(candidate_final_result.CandidateId).data
+                    reject_serilaizer = CandidateApplicationSerializer(candidate_final_result.CandidateId).data
                     Reject[timezone.localtime(candidate_final_result.ReviewedOn).date()].append(reject_serilaizer)
                 
                 elif candidate.Screening_Status == "rejected":
-                    print("rejected")
-                    reject_serilaizer=CandidateApplicationSerializer(candidate.CandidateId).data
+                    reject_serilaizer = CandidateApplicationSerializer(candidate.CandidateId).data
                     Reject[candidate.ReviewedDate].append(reject_serilaizer)
 
                 elif candidate_final_result and candidate_final_result.Final_Result == "Rejected_by_Candidate":
-                    rejected_by_candidate_serilaizer=CandidateApplicationSerializer(candidate_final_result.CandidateId).data
+                    rejected_by_candidate_serilaizer = CandidateApplicationSerializer(candidate_final_result.CandidateId).data
                     Rejected_by_Candidate[timezone.localtime(candidate_final_result.ReviewedOn).date()].append(rejected_by_candidate_serilaizer)
 
                 elif candidate.Screening_Status == "Rejected_by_Candidate":
-                    rejected_by_candidate_serilaizer=CandidateApplicationSerializer(candidate.CandidateId).data
+                    rejected_by_candidate_serilaizer = CandidateApplicationSerializer(candidate.CandidateId).data
                     Rejected_by_Candidate[candidate.ReviewedDate].append(rejected_by_candidate_serilaizer)
 
                 elif candidate_final_result and candidate_final_result.Final_Result == "On_Hold":
-                    on_hold_serilaizer=CandidateApplicationSerializer(candidate_final_result.CandidateId).data
+                    on_hold_serilaizer = CandidateApplicationSerializer(candidate_final_result.CandidateId).data
                     On_Hold[timezone.localtime(candidate_final_result.ReviewedOn).date()].append(on_hold_serilaizer)
 
                 elif candidate.CandidateId.Final_Results == "offered":
-                    offered_candidate=None
-                    offered_candidate_obj= OfferLetterModel.objects.filter(CandidateId=candidate.CandidateId,
-                                                                        Letter_sended_status=True)
+                    offered_candidate = None
+                    offered_candidate_obj = offer_letter_map.get(candidate_id, [])
                     for final_result in offered_candidate_obj:
-                        offered_on_local = localtime(final_result.OfferedDate)  # Convert ReviewedOn to local time
+                        offered_on_local = localtime(final_result.OfferedDate)
                         if offered_on_local.month == current_month and offered_on_local.year == current_year:
                             offered_candidate = final_result
                             break
 
                     if offered_candidate:
-                        offered_serilaizer=CandidateApplicationSerializer(offered_candidate.CandidateId).data
+                        offered_serilaizer = CandidateApplicationSerializer(offered_candidate.CandidateId).data
                         Offers[timezone.localtime(offered_candidate.OfferedDate).date()].append(offered_serilaizer)
 
                 elif candidate_final_result and candidate_final_result.Final_Result == "Offer_did_not_accept":
-                    offered_rejections_serilaizer=CandidateApplicationSerializer(candidate_final_result.CandidateId).data
+                    offered_rejections_serilaizer = CandidateApplicationSerializer(candidate_final_result.CandidateId).data
                     Offer_did_not_accept[timezone.localtime(candidate_final_result.ReviewedOn).date()].append(offered_rejections_serilaizer)
 
                 elif candidate.Screening_Status == "walkout":
-                    walkout_serilaizer=CandidateApplicationSerializer(candidate.CandidateId).data
+                    walkout_serilaizer = CandidateApplicationSerializer(candidate.CandidateId).data
                     walkout[candidate.ReviewedDate].append(walkout_serilaizer)
 
-                
-            # Full month logic
+            # Full month response formatting
             if requirement == "full_month":
-                # Flatten interview schedules
-                if activity_status =="interview_schedule":
-                    all_interviews = [
-                        interview for date_interviews in interview_schedules.values() for interview in date_interviews
-                    ]
-                    return Response(
-                            [{
-                                "activity_id": 1,
-                                "per_day_achievements": all_interviews}]    
-                    )
+                if activity_status == "interview_schedule":
+                    all_interviews = [i for date_interviews in interview_schedules.values() for i in date_interviews]
+                    return Response([{"activity_id": 1, "per_day_achievements": all_interviews}])
 
-                # Flatten walk-in schedules
-                if activity_status =="walkins":
-                    all_walkins = [
-                        walkin for date_walkins in walkins_schedules.values() for walkin in date_walkins
-                    ]
-                    return Response(
-                            [{
-                                "activity_id": 1,
-                                "per_day_achievements": all_walkins}])
+                if activity_status == "walkins":
+                    all_walkins = [w for date_walkins in walkins_schedules.values() for w in date_walkins]
+                    return Response([{"activity_id": 1, "per_day_achievements": all_walkins}])
 
-                # Flatten screenings
-                if activity_status =="screening":
-
-                    all_screenings = [
-                        screen for date_screenings in screenings.values() for screen in date_screenings
-                    ]
-                    return Response(
-                        [{
-                                "activity_id": 1,
-                                "per_day_achievements": all_screenings}])
+                if activity_status == "screening":
+                    all_screenings = [s for date_screenings in screenings.values() for s in date_screenings]
+                    return Response([{"activity_id": 1, "per_day_achievements": all_screenings}])
                 
-                if activity_status =="consider_to_client":
-                    all_clients = [
-                        clients for date_clients in consider_to_client.values() for clients in date_clients
-                    ]
-
-                    return Response(
-                            [{
-                                "activity_id": 1,
-                                "per_day_achievements": all_clients}])
+                if activity_status == "consider_to_client":
+                    all_clients = [c for date_clients in consider_to_client.values() for c in date_clients]
+                    return Response([{"activity_id": 1, "per_day_achievements": all_clients}])
                 
-                if activity_status =="Internal_Hiring":
-                    all_internal_hiring = [
-                        internal_hiring for date_internal_hiring in Internal_Hiring.values() for internal_hiring in date_internal_hiring
-                    ]
-                    return Response(
-                            [{
-                                "activity_id": 1,
-                                "per_day_achievements": all_internal_hiring}])
+                if activity_status == "Internal_Hiring":
+                    all_internal_hiring = [ih for date_internal in Internal_Hiring.values() for ih in date_internal]
+                    return Response([{"activity_id": 1, "per_day_achievements": all_internal_hiring}])
                 
-                if activity_status =="Reject":
+                if activity_status == "Reject":
+                    all_Rejects = [r for date_Reject in Reject.values() for r in date_Reject]
+                    return Response([{"activity_id": 1, "per_day_achievements": all_Rejects}])
 
-                    all_Rejects = [
-                        Rejections for date_Reject in Reject.values() for Rejections in date_Reject
-                    ]
-                    return Response(
-                            [{
-                                "activity_id": 1,
-                                "per_day_achievements": all_Rejects}])
+                if activity_status == "Rejected_by_Candidate":
+                    all_Rejects_by_Candidate = [rc for date_Rejected in Rejected_by_Candidate.values() for rc in date_Rejected]
+                    return Response([{"activity_id": 1, "per_day_achievements": all_Rejects_by_Candidate}])
 
+                if activity_status == "On_Hold":
+                    all_On_Hold = [h for date_On_Hold in On_Hold.values() for h in date_On_Hold]
+                    return Response([{"activity_id": 1, "per_day_achievements": all_On_Hold}])
 
-                if activity_status =="Rejected_by_Candidate":
-
-                    all_Rejects_by_Candidate = [
-                        candidate_rejection for date_Rejected_by_Candidate in Rejected_by_Candidate.values() for candidate_rejection in date_Rejected_by_Candidate
-                    ]
-
-                    return Response(
-                            [{
-                                "activity_id": 1,
-                                "per_day_achievements": all_Rejects_by_Candidate}])
-
-                if activity_status =="On_Hold":
-
-                    all_On_Hold = [
-                        hold_candidates for date_On_Hold in On_Hold.values() for hold_candidates in date_On_Hold
-                    ]
-
-                    return Response(
-                            [{
-                                "activity_id": 1,
-                                "per_day_achievements": all_On_Hold}])
-
-                if activity_status =="walkout":
-
-                    all_walkout = [
-                        walkout_candidates for date_walkout in walkout.values() for walkout_candidates in date_walkout
-                    ]
-
-                    return Response(
-                            [{
-                                "activity_id": 1,
-                                "per_day_achievements": all_walkout}])
+                if activity_status == "walkout":
+                    all_walkout = [wo for date_walkout in walkout.values() for wo in date_walkout]
+                    return Response([{"activity_id": 1, "per_day_achievements": all_walkout}])
                 
-                if activity_status =="Offers":
-
-                    all_Offers = [
-                        Offers_candidates for date_Offers in Offers.values() for Offers_candidates in date_Offers
-                    ]
-
-                    return Response(
-                            [{
-                                "activity_id": 1,
-                                "per_day_achievements": all_Offers}])
+                if activity_status == "Offers":
+                    all_Offers = [o for date_Offers in Offers.values() for o in date_Offers]
+                    return Response([{"activity_id": 1, "per_day_achievements": all_Offers}])
                 
                 if activity_status == "Offer_did_not_accept":
+                    all_Offer_did_not_accept = [ora for date_Ora in Offer_did_not_accept.values() for ora in date_Ora]
+                    return Response([{"activity_id": 1, "per_day_achievements": all_Offer_did_not_accept}])
 
-                    all_Offer_did_not_accept = [
-                        Offers_rejects_candidates for date_Offers_rejects in Offer_did_not_accept.values() for Offers_rejects_candidates in date_Offers_rejects
-                    ]
-                    return Response(
-                            [{
-                                "activity_id": 1,
-                                "per_day_achievements": all_Offer_did_not_accept}])
-                   
-            # Default behavior: group by date
-
+            # Grouped response formatting
             interview_schedules_list = [
                 {"activity_id": 1, "date": date, "interview_schedule_data": interview_schedules[date]}
                 for date in sorted(interview_schedules.keys())
             ]
-
             walkins_schedules_list = [
                 {"activity_id": 1, "date": date, "walkin_schedule_data": walkins_schedules[date]}
                 for date in sorted(walkins_schedules.keys())
             ]
-
             screening_conducted_list = [
                 {"activity_id": 1, "date": date, "screening_conducted_data": screenings[date]}
                 for date in sorted(screenings.keys())
             ]
-
             consider_to_client_list = [
                 {"activity_id": 1, "date": date, "consider_to_client_data": consider_to_client[date]}
                 for date in sorted(consider_to_client.keys())
             ]
-
             internal_hiring_list = [
                 {"activity_id": 1, "date": date, "internal_hiring_data": Internal_Hiring[date]}
                 for date in sorted(Internal_Hiring.keys())
             ]
-
             Rejections_list = [
                 {"activity_id": 1, "date": date, "Rejections_data": Reject[date]}
                 for date in sorted(Reject.keys())
             ]
-
             Rejected_by_Candidate_list = [
                 {"activity_id": 1, "date": date, "Rejected_by_Candidate_data": Rejected_by_Candidate[date]}
                 for date in sorted(Rejected_by_Candidate.keys())
             ]
-
             On_Hold_list = [
                 {"activity_id": 1, "date": date, "On_Hold_data": On_Hold[date]}
                 for date in sorted(On_Hold.keys())
             ]
-
             offers_list = [
                 {"activity_id": 1, "date": date, "offers_data": Offers[date]}
                 for date in sorted(Offers.keys())
             ]
-
             offer_rejected_list = [
                 {"activity_id": 1, "date": date, "offers_tejects_data": Offer_did_not_accept[date]}
                 for date in sorted(Offer_did_not_accept.keys())
             ]
-
             walkout_list = [
                 {"activity_id": 1, "date": date, "walkouts_data": walkout[date]}
                 for date in sorted(walkout.keys())
             ]
-
+            interview_not_attended_list = [
+                {"activity_id": 1, "date": date, "not_attended_data": interview_not_attended[date]}
+                for date in sorted(interview_not_attended.keys())
+            ]
 
             return Response(
                 {
                     "interview_schedules": interview_schedules_list,
                     "walkins_schedules": walkins_schedules_list,
+                    "interview_not_attended": interview_not_attended_list,
                     "screening": screening_conducted_list,
                     "walkout": walkout_list,
-                    "Reject" : Rejections_list,
+                    "Reject": Rejections_list,
                     "Rejected_by_Candidate": Rejected_by_Candidate_list,
-                    "consider_to_client" : consider_to_client_list,
+                    "consider_to_client": consider_to_client_list,
                     "On_Hold": On_Hold_list,
-                    "Internal_Hiring" : internal_hiring_list,
-                    "Offers" : offers_list,
-                    "Offer_did_not_accept":offer_rejected_list,
+                    "Internal_Hiring": internal_hiring_list,
+                    "Offers": offers_list,
+                    "Offer_did_not_accept": offer_rejected_list,
                 },
                 status=status.HTTP_200_OK,
             )
         
         except Exception as e:
             return Response(str(e), status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
+
+
+
+
+
 
 from django.db.models import DateField
 from django.db.models.functions import Cast
@@ -3648,17 +4485,52 @@ class BulkActivityUploadView(APIView):
             for index, record_data in enumerate(records_to_create):
                 record_data["current_day_activity"] = month_achieve_instance.pk
                  # Set lead_status to 'staged' for bulk uploads #17/04/2026
-                # record_data["lead_status"] = "staged" 
-                # Set lead_status to 'active' for bulk uploads
-                record_data["lead_status"] = "active" 
+                #  record_data["lead_status"] = "active"
+                record_data["lead_status"] = "staged" #20/6/26
                 # Set sourcing_channel to bulk_upload for bulk uploads
                 record_data["sourcing_channel"] = "bulk_upload"
                 
-                serializer = NewDailyAchivesModelSerializer(data=record_data)
-                if serializer.is_valid():
-                    final_records.append(NewDailyAchivesModel(**serializer.validated_data))
+                #19/6/26
+                row_errors = {}
+                if activity_list_id == 1:
+                    c_name = record_data.get('candidate_name')
+                    c_phone = record_data.get('candidate_phone')
+                    if not c_name or not str(c_name).strip():
+                        row_errors['candidate_name'] = ["Candidate Name is required."]
+                    if not c_phone or not str(c_phone).strip():
+                        row_errors['candidate_phone'] = ["Candidate Phone is required."]
+                    else:
+                        phone_str = str(c_phone).strip()
+                        if phone_str.endswith('.0'):
+                            phone_str = phone_str[:-2]
+                        record_data['candidate_phone'] = phone_str
+                        digits = ''.join(c for c in phone_str if c.isdigit())
+                        if not (10 <= len(digits) <= 12):
+                            row_errors['candidate_phone'] = ["Candidate Phone must be between 10 and 12 digits."]
+                elif activity_list_id == 3:
+                    cl_name = record_data.get('client_name')
+                    cl_phone = record_data.get('client_phone')
+                    if not cl_name or not str(cl_name).strip():
+                        row_errors['client_name'] = ["Client Name is required."]
+                    if not cl_phone or not str(cl_phone).strip():
+                        row_errors['client_phone'] = ["Client Phone is required."]
+                    else:
+                        phone_str = str(cl_phone).strip()
+                        if phone_str.endswith('.0'):
+                            phone_str = phone_str[:-2]
+                        record_data['client_phone'] = phone_str
+                        digits = ''.join(c for c in phone_str if c.isdigit())
+                        if not (10 <= len(digits) <= 12):
+                            row_errors['client_phone'] = ["Client Phone must be between 10 and 12 digits."]
+
+                if row_errors:
+                    errors.append({f"Row {index + 2}": row_errors})
                 else:
-                    errors.append({f"Row {index + 2}": serializer.errors})
+                    serializer = NewDailyAchivesModelSerializer(data=record_data)
+                    if serializer.is_valid():
+                        final_records.append(NewDailyAchivesModel(**serializer.validated_data))
+                    else:
+                        errors.append({f"Row {index + 2}": serializer.errors})
             
             if errors:
                 return Response({"status": "failed", "errors": errors}, status=status.HTTP_400_BAD_REQUEST)
@@ -4057,6 +4929,9 @@ class LeadActivityLogView(APIView):
                         "display_status": status_label, # For text label
                         "sub_status": data.rejection_type or data.client_status or data.interview_status,
                         "notes": notes,
+                        #16/7/26
+                        "closure_reason": data.closure_reason or data.rejection_type or data.interview_call_remarks or data.client_call_remarks,
+                        "stage_of_closure": data.lead_stage or data.interview_status or "screening",
                         "expected_date": None,
                         "expected_time": None,
                         "employee_name": entry["employee_name"],
@@ -4068,15 +4943,29 @@ class LeadActivityLogView(APIView):
                     raw_status = "active"
                     
                     # Check if this ID was identified as the closing one
+                    #16/7/26
+                    is_closing = False
                     if data.activity_record.id in closing_followup_ids and closing_followup_ids[data.activity_record.id] == data.id:
                         raw_status = data.activity_record.lead_status or "active"
-                        status_label = "Lead " + raw_status.capitalize()
+                        # status_label = "Lead " + raw_status.capitalize()
+                        #16/7/26
+                        status_label = "Closed" if raw_status == 'closed' else ("Rejected" if raw_status == 'rejected' else "Active")
+                        is_closing = True
                     elif data.status == 'pending':
                         status_label = "Pending Follow Up"
                         raw_status = "active"
                     else:
                         status_label = "Follow Up"
                         raw_status = "active"
+
+                    #16/7/26
+                    # Fetch the follow-up expected date for display
+                    expected_date_str = data.expected_date.strftime('%Y-%m-%d') if data.expected_date else None
+                    expected_time_str = data.expected_time.strftime('%H:%M') if data.expected_time else None
+                    
+                    # For completed follow ups, find when it was completed. FollowUpModel completed time is saved in completed_on
+                    done_date = data.completed_on if data.completed_on else data.created_on
+                    last_fup_date = data.activity_record.Created_Date
 
                     serialized_history.append({
                         "id": data.id,
@@ -4086,8 +4975,16 @@ class LeadActivityLogView(APIView):
                         "display_status": status_label,
                         "sub_status": None,
                         "notes": data.notes,
-                        "expected_date": data.expected_date,
-                        "expected_time": data.expected_time,
+                        # "expected_date": data.expected_date,
+                        # "expected_time": data.expected_time,
+                        #16/7/26
+                        "expected_date": expected_date_str,
+                        "expected_time": expected_time_str,
+                        "done_date": done_date,
+                        "last_fup_date": last_fup_date,
+                        "is_closing": is_closing,
+                        "closure_reason": data.activity_record.closure_reason or data.activity_record.rejection_type or data.notes,
+                        "stage_of_closure": data.activity_record.lead_stage or data.activity_record.interview_status or "followup",
                         "employee_name": entry["employee_name"],
                         "type": "Follow Up"
                     })
@@ -4095,13 +4992,63 @@ class LeadActivityLogView(APIView):
             # Lead Details (Prioritize the specific record clicked over other records with same phone)
             latest_main = reference_activity or main_activities_qs.order_by('-Created_Date').first()
 
+            #2/7/26
+            employee_name = "Unknown"
+            assigned_by_name = "-"
+            activity_category = "Interview Calls"
+            requirement_name = "-"
+            
+            if latest_main:
+                try:
+                    if latest_main.current_day_activity and latest_main.current_day_activity.Activity_instance:
+                        if latest_main.current_day_activity.Activity_instance.Employee:
+                            employee_name = latest_main.current_day_activity.Activity_instance.Employee.Name
+                        if latest_main.current_day_activity.Activity_instance.Activity:
+                            activity_category = latest_main.current_day_activity.Activity_instance.Activity.activity_name
+                except:
+                    pass
+                
+                if latest_main.assigned_by:
+                    assigned_by_name = latest_main.assigned_by.Name
+                else:
+                    try:
+                        assigner = latest_main.current_day_activity.Activity_instance.activity_assigned_by
+                        if assigner:
+                            assigned_by_name = assigner.Name
+                    except:
+                        pass
+                
+                if latest_main.assigned_requirement and latest_main.assigned_requirement.requirement:
+                    req_job = latest_main.assigned_requirement.requirement.job_title
+                    req_client = latest_main.assigned_requirement.requirement.client.client_name if latest_main.assigned_requirement.requirement.client else ""
+                    requirement_name = f"{req_job} ({req_client})" if req_client else req_job
+
             response_data = {
                 "lead_details": {
                     "name": latest_main.candidate_name or latest_main.client_name if latest_main else "Unknown",
                     "phone": latest_main.candidate_phone or latest_main.client_phone if latest_main else "Unknown",
                     "email": latest_main.candidate_email or latest_main.client_email if latest_main else "",
                     "company_name": latest_main.client_company_name if latest_main else "",
-                    "current_status": latest_main.interview_status if latest_main.interview_status in ['joined', 'offer'] else (latest_main.client_status if latest_main.client_status in ['job', 'converted_to_client'] else (latest_main.lead_status or "Active"))
+                    #2/7/26
+                    "current_status": latest_main.interview_status if latest_main.interview_status in ['joined', 'offer'] else (latest_main.client_status if latest_main.client_status in ['job', 'converted_to_client'] else (latest_main.lead_status or "Active")),
+                    "location": latest_main.candidate_location if latest_main else "",
+                    "designation": latest_main.candidate_designation if latest_main else "",
+                    "fresher_experience": latest_main.candidate_current_status if latest_main else "",
+                    "experience": latest_main.candidate_experience if latest_main else None,
+                    "industries_worked": latest_main.industries_worked if latest_main else "",
+                    "source": latest_main.source or latest_main.sourcing_channel if latest_main else "",
+                    "expected_ctc": latest_main.expected_ctc if latest_main else None,
+                    "current_ctc": latest_main.current_ctc if latest_main else None,
+                    "doj": latest_main.DOJ.strftime('%Y-%m-%d') if (latest_main and latest_main.DOJ) else "",
+                    "have_laptop": "Yes" if (latest_main and latest_main.have_laptop) else ("No" if (latest_main and latest_main.have_laptop is False) else ""),
+                    "message_to_candidates": latest_main.message_to_candidates if latest_main else "",
+                    "requirement": requirement_name,
+                    "activity_category": activity_category.replace('_', ' ').title() if activity_category else "",
+                    "candidate_status": latest_main.interview_status or latest_main.client_status if latest_main else "",
+                    "interview_call_remarks": latest_main.interview_call_remarks or latest_main.client_call_remarks or latest_main.job_post_remarks if latest_main else "",
+                    "added_on": latest_main.Created_Date.strftime('%m/%d/%y, %I:%M %p') if (latest_main and latest_main.Created_Date) else "",
+                    "employee_name": employee_name,
+                    "assigned_by": assigned_by_name,
                 },
                 "history": serialized_history
             }
@@ -4150,6 +5097,52 @@ class FetchStagedActivitiesView(APIView):
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+#20/6/26
+def shift_lead_to_today(lead, employee, activity_name="interview_calls"):
+    """
+    Shifts the lead's current_day_activity to today's date for the specified employee
+    and returns (old_parent, new_parent).
+    """
+    from calendar import monthrange
+    from datetime import timedelta
+    from django.utils import timezone
+    from .models import ActivityListModel, NewActivityModel, MonthAchivesListModel
+    
+    today = timezone.localdate()
+    
+    # 1. Get or create NewActivityModel for the employee for this month/year
+    activity_list, _ = ActivityListModel.objects.get_or_create(
+        activity_name=activity_name,
+        defaults={"added_by": employee}
+    )
+    
+    new_activity_instance, created = NewActivityModel.objects.get_or_create( 
+        Activity=activity_list, Employee=employee,
+        Activity_assigned_Date__month=today.month, Activity_assigned_Date__year=today.year,
+        defaults={'activity_assigned_by': employee, 'targets': 0}
+    )
+    
+    if created:
+        current_date = timezone.localdate()
+        last_day_of_month = monthrange(current_date.year, current_date.month)[1] 
+        end_date = current_date.replace(day=last_day_of_month)
+        while current_date <= end_date:
+            MonthAchivesListModel.objects.get_or_create(Activity_instance=new_activity_instance, Date=current_date)
+            current_date += timedelta(days=1)
+            
+    # 2. Get today's daily achievements parent
+    month_achieve_instance, _ = MonthAchivesListModel.objects.get_or_create( 
+        Activity_instance=new_activity_instance, Date=today
+    )
+    
+    old_parent = lead.current_day_activity
+    
+    # 3. Shift the lead to today
+    lead.current_day_activity = month_achieve_instance
+    lead.Created_Date = timezone.now()
+    
+    return old_parent, month_achieve_instance
+
 
 class ActivateStagedActivityView(APIView):
     """
@@ -4159,19 +5152,55 @@ class ActivateStagedActivityView(APIView):
     def post(self, request, activity_id):
         try:
             record = NewDailyAchivesModel.objects.get(pk=activity_id)
-            # Original code (none, as this is a new view):
-            # record.lead_status = 'staged'
-            record.lead_status = 'active'
-            record.save()
-
-            # Recalculate achievement count for the day
-            if record.current_day_activity:
-                parent = record.current_day_activity
-                parent.achieved = NewDailyAchivesModel.objects.filter(
-                    current_day_activity=parent,
-                    lead_status='active'
-                ).count()
-                parent.save()
+            #20/6/26
+            if record.lead_status == 'staged':
+                employee = None
+                if record.current_day_activity and record.current_day_activity.Activity_instance:
+                    employee = record.current_day_activity.Activity_instance.Employee
+                
+                # Fallback to current login user if employee is not found in parent
+                if not employee:
+                    login_emp_id = request.data.get("login_emp_id") or request.GET.get("login_emp_id")
+                    if login_emp_id:
+                        employee = EmployeeDataModel.objects.filter(EmployeeId=login_emp_id).first()
+                
+                if employee:
+                    activity_name = "interview_calls"
+                    if record.current_day_activity and record.current_day_activity.Activity_instance and record.current_day_activity.Activity_instance.Activity:
+                        activity_name = record.current_day_activity.Activity_instance.Activity.activity_name
+                    
+                    old_parent, new_parent = shift_lead_to_today(record, employee, activity_name)
+                    record.lead_status = 'active'
+                    record.save()
+                    
+                    #20/6/26
+                    # Recalculate achievement count for both old parent and new parent
+                    if old_parent:
+                        old_parent.achieved = NewDailyAchivesModel.objects.filter(
+                            current_day_activity=old_parent,
+                            lead_status='active'
+                        ).count()
+                        old_parent.save()
+                    
+                    if new_parent:
+                        new_parent.achieved = NewDailyAchivesModel.objects.filter(
+                            current_day_activity=new_parent,
+                            lead_status='active'
+                        ).count()
+                        new_parent.save()
+                else:
+                    record.lead_status = 'active'
+                    record.save()
+                    if record.current_day_activity:
+                        parent = record.current_day_activity
+                        parent.achieved = NewDailyAchivesModel.objects.filter(
+                            current_day_activity=parent,
+                            lead_status='active'
+                        ).count()
+                        parent.save()
+            else:
+                record.lead_status = 'active'
+                record.save()
 
             return Response({"message": "Activity activated successfully.", "id": record.id}, status=status.HTTP_200_OK)
         except NewDailyAchivesModel.DoesNotExist:

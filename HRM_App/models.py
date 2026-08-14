@@ -21,7 +21,12 @@ class RegistrationModel(models.Model):
     profile_img=models.FileField(upload_to='Profile_Images/',blank=True,null=True)
     is_active=models.BooleanField(default=True)
     is_login=models.BooleanField(default=False)
-    
+
+    # Required by DRF's IsAuthenticated permission when this model is used as request.user
+    @property
+    def is_authenticated(self):
+        return True
+
     def __str__(self):
         return self.EmployeeId
     
@@ -367,6 +372,8 @@ class EmployeeDataModel(models.Model):
     #6/6/26
     leads_access=models.BooleanField(default=False)
     universal_leads_access=models.BooleanField(default=False)
+    #20/6/26
+    lead_assign_access=models.BooleanField(default=False)
     
     self_activity_add=models.BooleanField(default=False)
     all_employees_view=models.BooleanField(default=False)
@@ -376,6 +383,7 @@ class EmployeeDataModel(models.Model):
     holiday_calender_creation=models.BooleanField(default=False)
     assign_offerletter_prepare=models.BooleanField(default=False)
     job_post=models.BooleanField(default=False)
+    whatsapp_access=models.BooleanField(default=False)
     attendance_upload=models.BooleanField(default=False)
     leave_create=models.BooleanField(default=False)
     leave_edit=models.BooleanField(default=False)
@@ -1166,6 +1174,8 @@ class MonthAchivesListModel(models.Model):
 class NewDailyAchivesModel(models.Model):
     current_day_activity=models.ForeignKey(MonthAchivesListModel,on_delete=models.CASCADE,blank=True,null=True)
     assigned_requirement = models.ForeignKey(RequirementAssign, on_delete=models.SET_NULL, blank=True, null=True) #17/4/2026
+    #2/7/26
+    assigned_by = models.ForeignKey(EmployeeDataModel, on_delete=models.SET_NULL, blank=True, null=True, related_name='assigned_achievements')
     sourcing_channel = models.CharField(
         max_length=50,
         choices=[
@@ -1221,6 +1231,11 @@ class NewDailyAchivesModel(models.Model):
             ("joined","Joined"),] #17/4/2026
 
     interview_status=models.CharField(max_length=100,blank=True,null=True,choices=choice)
+    #1/7/26
+    lead_stage=models.CharField(max_length=100,blank=True,null=True)
+    current_status=models.CharField(max_length=100,blank=True,null=True)
+    interview_attendance=models.CharField(max_length=100,blank=True,null=True)
+    
     message_to_candidates=models.TextField(blank=True,null=True)
     interview_scheduled_date=models.DateTimeField(blank=True,null=True)
     interview_walkin_date=models.DateTimeField(blank=True,null=True)
@@ -1236,7 +1251,8 @@ class NewDailyAchivesModel(models.Model):
             ("job","Job"),
             ("converted_to_client","Converted to Client"), # Added to match frontend
             ("closed","Closed"),
-            ("followup","FollowUp"),]
+            ("followup","FollowUp"),
+            ("prospect","Prospect"),]
 
     client_status=models.CharField(max_length=100,blank=True,null=True,choices=choice)
     client_call_remarks=models.TextField(blank=True,null=True)

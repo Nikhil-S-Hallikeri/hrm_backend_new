@@ -834,15 +834,35 @@ class Job_Description_Model(models.Model):
     posted_on = models.DateTimeField(auto_now_add=True)
     slug = models.SlugField(max_length=500, unique=True, blank=True, null=True)
 
+    # def save(self, *args, **kwargs):
+    #     if not self.slug:
+    #         from django.utils.text import slugify
+    #         date_str = timezone.localdate().strftime('%Y-%m-%d')
+    #         # Fallback if fields are missing, though they shouldn't be
+    #         role = self.role or "job"
+    #         company = self.company_inrto or "company"
+    #         base_slug = f"{role}-{company}-{date_str}"
+    #         self.slug = slugify(base_slug)
+    #     super().save(*args, **kwargs)
+
     def save(self, *args, **kwargs):
         if not self.slug:
             from django.utils.text import slugify
-            date_str = timezone.localdate().strftime('%Y-%m-%d')
-            # Fallback if fields are missing, though they shouldn't be
             role = self.role or "job"
-            company = self.company_inrto or "company"
-            base_slug = f"{role}-{company}-{date_str}"
-            self.slug = slugify(base_slug)
+            #30/6/26
+            location = self.job_location or "anywhere"
+            
+            base_slug = f"{role}-jobs-in-{location}"
+            slug = slugify(base_slug)
+            
+            # Ensure uniqueness without using the date
+            unique_slug = slug
+            num = 1
+            while Job_Description_Model.objects.filter(slug=unique_slug).exists():
+                unique_slug = f"{slug}-{num}"
+                num += 1
+                
+            self.slug = unique_slug
         super().save(*args, **kwargs)
 
     def __str__(self):

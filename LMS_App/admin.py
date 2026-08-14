@@ -29,3 +29,12 @@ admin.site.register(AppraisalInvitationModel)
 admin.site.register(EmployeeSelfEvaluation)
 admin.site.register(EmployeeSelfEvaluationReviewModel)
 admin.site.register(Performance_Metrics_Model)
+
+#1/7/26
+class JobDescriptionAdmin(admin.ModelAdmin):
+    list_display = ('Title', 'role', 'job_location', 'posted_on', 'slug', 'is_active')
+    search_fields = ('Title', 'role', 'job_location', 'slug')
+    list_filter = ('is_active', 'job_type', 'posted_on')
+
+if not admin.site.is_registered(Job_Description_Model):
+    admin.site.register(Job_Description_Model, JobDescriptionAdmin)

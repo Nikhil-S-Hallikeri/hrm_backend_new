@@ -1364,6 +1364,8 @@ class NewEmployeesAdding(APIView):
             emp_info_serializer["universal_leads_access"] = (
                 emp_obj.universal_leads_access
             )
+            #20/6/26
+            emp_info_serializer["lead_assign_access"] = emp_obj.lead_assign_access
             emp_info_serializer["self_activity_add"] = emp_obj.self_activity_add
             emp_info_serializer["all_employees_view"] = emp_obj.all_employees_view
             emp_info_serializer["all_employees_edit"] = emp_obj.all_employees_edit
@@ -1380,6 +1382,7 @@ class NewEmployeesAdding(APIView):
                 emp_obj.assign_offerletter_prepare
             )
             emp_info_serializer["job_post"] = emp_obj.job_post
+            emp_info_serializer["whatsapp_access"] = emp_obj.whatsapp_access
             emp_info_serializer["attendance_upload"] = emp_obj.attendance_upload
             emp_info_serializer["leave_create"] = emp_obj.leave_create
 
@@ -1573,6 +1576,10 @@ class NewEmployeesAdding(APIView):
         emp.universal_leads_access = str_to_bool(
             request.data.get("universal_leads_access", "false")
         )
+        #20/6/26
+        emp.lead_assign_access = str_to_bool(
+            request.data.get("lead_assign_access", "false")
+        )
         emp.self_activity_add = str_to_bool(
             request.data.get("self_activity_add", "false")
         )
@@ -1595,6 +1602,7 @@ class NewEmployeesAdding(APIView):
             request.data.get("assign_offerletter_prepare", "false")
         )
         emp.job_post = str_to_bool(request.data.get("job_post", "false"))
+        emp.whatsapp_access = str_to_bool(request.data.get("whatsapp_access", "false"))
         emp.attendance_upload = str_to_bool(
             request.data.get("attendance_upload", "false")
         )
@@ -1867,6 +1875,7 @@ class NewEmployeesAdding(APIView):
                     "all_applicants_access",
                     "leads_access",
                     "universal_leads_access",  # 6/6/26
+                    "lead_assign_access", #20/6/26
                 ]
 
                 # Loop through each permission and set it if the value in request_data is not None

@@ -17,7 +17,7 @@ class FilterCandidateApplicationSerializer(serializers.ModelSerializer):
         model=CandidateApplicationModel
         fields='__all__'
     
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, time, timedelta
 
 class CandidateApplicationSerializer(serializers.ModelSerializer):
     class Meta:
@@ -186,10 +186,24 @@ class AssignedRequirementSerializer(serializers.ModelSerializer):
         model = RequirementAssign
         fields ="__all__"
     
+    #16/7/26
     def get_requirement_data(self,obj):
-        if obj and hasattr(obj, 'requirement'):
-            req=Requirementserializer(obj.requirement).data
-            return req
+        # if obj and hasattr(obj, 'requirement'):
+        #     req=Requirementserializer(obj.requirement).data
+        #     return req
+        if obj and hasattr(obj, 'requirement') and obj.requirement:
+            req = obj.requirement
+            # Optimization: If calling from NewDailyAchivesModelSerializer, avoid expensive count queries
+            if self.context.get('lightweight', True):
+                return {
+                    "id": req.id,
+                    "job_title": req.job_title,
+                    "client_details": {
+                        "client_name": req.client.client_name if req.client else "N/A"
+                    }
+                }
+            req_data=Requirementserializer(req).data
+            return req_data
         return {}
 
 
@@ -807,25 +821,217 @@ class MonthAchivesListSerializer(serializers.ModelSerializer):
         model = MonthAchivesListModel
         fields = "__all__"
 
+# old code - occuring N+1 query
 # Serializer for NewDailyAchivesModel
+# class NewDailyAchivesModelSerializer(serializers.ModelSerializer):
+#     # Nested representation for related foreign key fields
+#     # current_day_activity = MonthAchivesListSerializer(read_only=True)
+
+#     def to_internal_value(self, data):
+#         data = data.copy() if hasattr(data, 'copy') else data
+#         if 'assigned_by' in data:
+#             val = data['assigned_by']
+#             if isinstance(val, str):
+#                 emp_id = data.get('assigned_by_id')
+#                 emp = None
+#                 if emp_id:
+#                     emp = EmployeeDataModel.objects.filter(EmployeeId=emp_id).first()
+#                 if not emp:
+#                     if val == "System" or not val.strip():
+#                         emp = None
+#                     else:
+#                         emp = EmployeeDataModel.objects.filter(Name=val).first() or EmployeeDataModel.objects.filter(EmployeeId=val).first()
+                
+#                 if emp:
+#                     data['assigned_by'] = emp.id
+#                 else:
+#                     data['assigned_by'] = None
+#         return super().to_internal_value(data)
+
+#     class Meta:
+#         model = NewDailyAchivesModel
+#         fields = "__all__"
+
+#     #5/6/26
+#     def validate(self, attrs):
+#         # Enforce remarks validation for manual edits and recruiter operations
+#         sourcing_channel = attrs.get('sourcing_channel', self.instance.sourcing_channel if self.instance else 'direct')
+        
+#         # Bypass validation for bulk upload or direct candidate submissions
+#         is_recruiter_action = sourcing_channel not in ['bulk_upload', 'direct']
+        
+#         if is_recruiter_action:
+#             # Determine the activity type (interview, client, or job post) to check the corresponding remarks field
+#             current_day_activity = attrs.get('current_day_activity', self.instance.current_day_activity if self.instance else None)
+#             activity_name = None
+#             if current_day_activity:
+#                 try:
+#                     if current_day_activity.Activity_instance and current_day_activity.Activity_instance.Activity:
+#                         activity_name = current_day_activity.Activity_instance.Activity.activity_name
+#                 except AttributeError:
+#                     pass
+            
+#             # Check remarks according to the activity type
+#             if activity_name == 'interview_calls':
+#                 remarks = attrs.get('interview_call_remarks', self.instance.interview_call_remarks if self.instance else '')
+#                 if not remarks or not str(remarks).strip():
+#                     raise serializers.ValidationError({
+#                         "interview_call_remarks": "Remarks/comments are mandatory for interview call logs."
+#                     })
+#             elif activity_name == 'client_calls':
+#                 remarks = attrs.get('client_call_remarks', self.instance.client_call_remarks if self.instance else '')
+#                 if not remarks or not str(remarks).strip():
+#                     raise serializers.ValidationError({
+#                         "client_call_remarks": "Remarks/comments are mandatory for client call logs."
+#                     })
+#             elif activity_name == 'job_posts':
+#                 remarks = attrs.get('job_post_remarks', self.instance.job_post_remarks if self.instance else '')
+#                 if not remarks or not str(remarks).strip():
+#                     raise serializers.ValidationError({
+#                         "job_post_remarks": "Remarks/comments are mandatory for job post logs."
+#                     })
+#         return attrs
+
+#     def to_representation(self, instance):
+#         representation = super().to_representation(instance)
+#         activity_name = "-"
+#         try:
+#             if instance.current_day_activity and instance.current_day_activity.Activity_instance and instance.current_day_activity.Activity_instance.Activity:
+#                 activity_name = instance.current_day_activity.Activity_instance.Activity.activity_name
+#         except AttributeError:
+#             pass
+#         representation['Activity_instance'] = activity_name
+        
+#         #17/4/2026
+#         # Add requirement data for display
+#         if instance.assigned_requirement:
+#             req_data = AssignedRequirementSerializer(instance.assigned_requirement).data
+#             representation['requirement_data'] = req_data
+#             # Flattened name for easier frontend table display
+#             client = req_data.get('requirement_data', {}).get('client_details', {}).get('client_name', 'N/A')
+#             job = req_data.get('requirement_data', {}).get('job_title', 'N/A')
+#             representation['requirement_name'] = f"{client} - {job}"
+#         else:
+#             representation['requirement_data'] = None
+#             representation['requirement_name'] = None
+
+#         # Fetch assignment details
+#         handled_by_name = "Unknown"
+#         handled_by_id = None
+#         assigned_by_name = "System"
+#         assigned_by_id = None
+#         try:
+#             if instance.current_day_activity and instance.current_day_activity.Activity_instance:
+#                 recruiter = instance.current_day_activity.Activity_instance.Employee
+#                 if recruiter:
+#                     handled_by_name = recruiter.Name
+#                     handled_by_id = recruiter.EmployeeId
+                
+#                 assigner = instance.current_day_activity.Activity_instance.activity_assigned_by
+#                 if assigner:
+#                     assigned_by_name = assigner.Name
+#                     assigned_by_id = assigner.EmployeeId
+#         except Exception:
+#             pass
+
+#         # Fetch latest pending follow-up details
+#         try:
+#             #17/7/26 - N+1
+#             # Check if prefetched 'followups' cache is available
+#             if hasattr(instance, '_prefetched_objects_cache') and 'followups' in instance._prefetched_objects_cache:
+#                 prefetched_followups = [
+#                     f for f in instance.followups.all()
+#                     if f.status == 'pending'
+#                 ]
+#                 # Sort in memory: descending expected_date, then expected_time
+#                 prefetched_followups.sort(
+#                     key=lambda f: (f.expected_date or date.max, f.expected_time or time.max),
+#                     reverse=True
+#                 )
+#                 latest_pending_followup = prefetched_followups[0] if prefetched_followups else None
+#             else:
+#                 latest_pending_followup = FollowUpModel.objects.filter(
+#                     activity_record=instance,
+#                     status='pending'
+#                 ).order_by('-expected_date', '-expected_time').first()
+            
+#             if latest_pending_followup:
+#                 #17/7/26 - N+1
+#                 representation['next_followup_date'] = latest_pending_followup.expected_date.strftime('%Y-%m-%d') if latest_pending_followup.expected_date else None
+#                 representation['next_followup_time'] = latest_pending_followup.expected_time.strftime('%H:%M') if latest_pending_followup.expected_time else None
+#                 representation['next_followup_notes'] = latest_pending_followup.notes
+#                 representation['next_followup_id'] = latest_pending_followup.id
+#             else:
+#                 representation['next_followup_date'] = None
+#                 representation['next_followup_time'] = None
+#                 representation['next_followup_notes'] = None
+#                 representation['next_followup_id'] = None
+#         except Exception:
+#             representation['next_followup_date'] = None
+#             representation['next_followup_time'] = None
+#             representation['next_followup_notes'] = None
+#             representation['next_followup_id'] = None
+
+#         representation['handled_by'] = handled_by_name
+#         representation['handled_by_id'] = handled_by_id
+#         representation['assigned_by'] = assigned_by_name
+#         representation['assigned_by_id'] = assigned_by_id
+
+#         #30/6/26
+#         # Fetch last called on date/time (latest completed follow-up or creation date)
+#         last_called_on = instance.Created_Date
+#         try:
+#             latest_completed_followup = FollowUpModel.objects.filter(
+#                 activity_record=instance,
+#                 status='completed'
+#             ).order_by('-completed_on').first()
+#             if latest_completed_followup and latest_completed_followup.completed_on:
+#                 last_called_on = latest_completed_followup.completed_on
+#         except Exception:
+#             pass
+#         representation['last_called_on'] = last_called_on.isoformat() if last_called_on else None
+            
+#         return representation
+
+
+
+
+
+# 17/7/26 - NEW CODE OPTIMIZED N+1 QUERY TOOK REFERENCE BY STUDIO (FIXED)
+from collections import defaultdict
+
 class NewDailyAchivesModelSerializer(serializers.ModelSerializer):
-    # Nested representation for related foreign key fields
-    # current_day_activity = MonthAchivesListSerializer(read_only=True)
+
+    def to_internal_value(self, data):
+        data = data.copy() if hasattr(data, 'copy') else data
+        if 'assigned_by' in data:
+            val = data['assigned_by']
+            if isinstance(val, str):
+                emp_id = data.get('assigned_by_id')
+                emp = None
+                if emp_id:
+                    emp = EmployeeDataModel.objects.filter(EmployeeId=emp_id).first()
+                if not emp:
+                    if val == "System" or not val.strip():
+                        emp = None
+                    else:
+                        emp = EmployeeDataModel.objects.filter(Name=val).first() or EmployeeDataModel.objects.filter(EmployeeId=val).first()
+                
+                if emp:
+                    data['assigned_by'] = emp.id
+                else:
+                    data['assigned_by'] = None
+        return super().to_internal_value(data)
 
     class Meta:
         model = NewDailyAchivesModel
         fields = "__all__"
 
-    #5/6/26
     def validate(self, attrs):
-        # Enforce remarks validation for manual edits and recruiter operations
         sourcing_channel = attrs.get('sourcing_channel', self.instance.sourcing_channel if self.instance else 'direct')
-        
-        # Bypass validation for bulk upload or direct candidate submissions
         is_recruiter_action = sourcing_channel not in ['bulk_upload', 'direct']
         
         if is_recruiter_action:
-            # Determine the activity type (interview, client, or job post) to check the corresponding remarks field
             current_day_activity = attrs.get('current_day_activity', self.instance.current_day_activity if self.instance else None)
             activity_name = None
             if current_day_activity:
@@ -835,7 +1041,6 @@ class NewDailyAchivesModelSerializer(serializers.ModelSerializer):
                 except AttributeError:
                     pass
             
-            # Check remarks according to the activity type
             if activity_name == 'interview_calls':
                 remarks = attrs.get('interview_call_remarks', self.instance.interview_call_remarks if self.instance else '')
                 if not remarks or not str(remarks).strip():
@@ -866,12 +1071,9 @@ class NewDailyAchivesModelSerializer(serializers.ModelSerializer):
             pass
         representation['Activity_instance'] = activity_name
         
-        #17/4/2026
-        # Add requirement data for display
         if instance.assigned_requirement:
             req_data = AssignedRequirementSerializer(instance.assigned_requirement).data
             representation['requirement_data'] = req_data
-            # Flattened name for easier frontend table display
             client = req_data.get('requirement_data', {}).get('client_details', {}).get('client_name', 'N/A')
             job = req_data.get('requirement_data', {}).get('job_title', 'N/A')
             representation['requirement_name'] = f"{client} - {job}"
@@ -879,7 +1081,6 @@ class NewDailyAchivesModelSerializer(serializers.ModelSerializer):
             representation['requirement_data'] = None
             representation['requirement_name'] = None
 
-        # Fetch assignment details
         handled_by_name = "Unknown"
         handled_by_id = None
         assigned_by_name = "System"
@@ -898,16 +1099,29 @@ class NewDailyAchivesModelSerializer(serializers.ModelSerializer):
         except Exception:
             pass
 
-        # Fetch latest pending follow-up details
+        # Use prefetched followups to avoid N+1 database queries
+        prefetched_followups = None
+        if hasattr(instance, '_prefetched_objects_cache') and 'followups' in instance._prefetched_objects_cache:
+            prefetched_followups = list(instance.followups.all())
+
+        # 1. Fetch latest pending follow-up details from prefetch cache if available
         try:
-            latest_pending_followup = FollowUpModel.objects.filter(
-                activity_record=instance,
-                status='pending'
-            ).order_by('-expected_date', '-expected_time').first()
+            if prefetched_followups is not None:
+                pending_followups = [f for f in prefetched_followups if f.status == 'pending']
+                pending_followups.sort(
+                    key=lambda f: (f.expected_date or date.max, f.expected_time or time.max),
+                    reverse=True
+                )
+                latest_pending_followup = pending_followups[0] if pending_followups else None
+            else:
+                latest_pending_followup = FollowUpModel.objects.filter(
+                    activity_record=instance,
+                    status='pending'
+                ).order_by('-expected_date', '-expected_time').first()
             
             if latest_pending_followup:
-                representation['next_followup_date'] = latest_pending_followup.expected_date.strftime('%Y-%m-%d')
-                representation['next_followup_time'] = latest_pending_followup.expected_time.strftime('%H:%M')
+                representation['next_followup_date'] = latest_pending_followup.expected_date.strftime('%Y-%m-%d') if latest_pending_followup.expected_date else None
+                representation['next_followup_time'] = latest_pending_followup.expected_time.strftime('%H:%M') if latest_pending_followup.expected_time else None
                 representation['next_followup_notes'] = latest_pending_followup.notes
                 representation['next_followup_id'] = latest_pending_followup.id
             else:
@@ -925,9 +1139,30 @@ class NewDailyAchivesModelSerializer(serializers.ModelSerializer):
         representation['handled_by_id'] = handled_by_id
         representation['assigned_by'] = assigned_by_name
         representation['assigned_by_id'] = assigned_by_id
+
+        # 2. Fetch last called on date/time (latest completed follow-up or creation date)
+        last_called_on = instance.Created_Date
+        try:
+            if prefetched_followups is not None:
+                completed_followups = [f for f in prefetched_followups if f.status == 'completed' and f.completed_on]
+                completed_followups.sort(key=lambda f: f.completed_on, reverse=True)
+                latest_completed_followup = completed_followups[0] if completed_followups else None
+            else:
+                latest_completed_followup = FollowUpModel.objects.filter(
+                    activity_record=instance,
+                    status='completed'
+                ).order_by('-completed_on').first()
+            if latest_completed_followup and latest_completed_followup.completed_on:
+                last_called_on = latest_completed_followup.completed_on
+        except Exception:
+            pass
+        representation['last_called_on'] = last_called_on.isoformat() if last_called_on else None
             
         return representation
-    
+
+
+
+
 #28-01-2026
 # Serializer for FollowUpModel
 class FollowUpSerializer(serializers.ModelSerializer):
@@ -974,6 +1209,14 @@ class FollowUpSerializer(serializers.ModelSerializer):
             representation['interview_status'] = activity.interview_status
             representation['interview_call_remarks'] = activity.interview_call_remarks
             
+            #20/6/26
+            # Include specific client fields
+            representation['client_name'] = activity.client_name
+            representation['client_phone'] = activity.client_phone
+            representation['client_email'] = activity.client_email
+            representation['client_status'] = activity.client_status
+            representation['client_call_remarks'] = activity.client_call_remarks
+            
             # Fetch assignment details
             handled_by_name = "Unknown"
             assigned_by_name = "System"
@@ -990,6 +1233,7 @@ class FollowUpSerializer(serializers.ModelSerializer):
                 pass
             representation['handled_by'] = handled_by_name
             representation['assigned_by'] = assigned_by_name
+        representation['last_called_on'] = instance.completed_on.isoformat() if instance.completed_on else None
         return representation
 
 

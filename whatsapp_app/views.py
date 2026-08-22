@@ -1060,12 +1060,38 @@ class ContactViewSet(viewsets.ModelViewSet):
 
                 provider_message_id = str(uuid.uuid4())
 
+                from whatsapp_app.utils import get_whatsapp_config
+                waba_dict = get_whatsapp_config(config.id)
+
+                # Dynamically build template components if placeholders are present
+                components = []
+                body_params = []
+                import re
+                placeholders = re.findall(r"\{\{([^}]+)\}\}", body_text)
+                if placeholders:
+                    for p in placeholders:
+                        p_name = p.strip()
+                        val = contact.name or "Candidate"
+                        if "role" in p_name.lower():
+                            val = "Applicant"
+                        body_params.append({
+                            "type": "text",
+                            "parameter_name": p_name,
+                            "text": val
+                        })
+                
+                if body_params:
+                    components.append({
+                        "type": "body",
+                        "parameters": body_params
+                    })
+
                 meta_response, status_code = send_whatsapp_message_direct_to_meta(
                     recipient_id=contact.phone_number,
-                    waba_config=config,
+                    waba_config=waba_dict,
                     template_name=config.auto_send_template_name,
                     language_code=lang,
-                    components=[],
+                    components=components,
                 )
 
                 if status_code in (200, 201):
@@ -3957,24 +3983,35 @@ def _execute_button_action(action_cfg, campaign, contact, waba_config, reply_cle
     followup_text = (action_cfg.get("reply_text") or "").strip()
 
     if action_type == "STOP":
-        ReminderExecution.objects.filter(
-            reminder_campaign=campaign, contact=contact, status="PENDING"
-        ).update(status="DIVERTED")
-        ReminderExecution.objects.filter(
-            reminder_campaign=campaign, contact=contact
-        ).update(button_response=reply_clean)
-        AutomationLog.objects.create(
-            whatsapp_config=campaign.whatsapp_config,
-            automation_type="REMINDER",
-            contact=contact,
-            action_type="DIVERTED",
-            details=f"Contact clicked '{reply_clean}'. Rule triggered STOP.",
-        )
+        if campaign:
+            ReminderExecution.objects.filter(
+                reminder_campaign=campaign, contact=contact, status="PENDING"
+            ).update(status="DIVERTED")
+            ReminderExecution.objects.filter(
+                reminder_campaign=campaign, contact=contact
+            ).update(button_response=reply_clean)
+            AutomationLog.objects.create(
+                whatsapp_config=campaign.whatsapp_config,
+                automation_type="REMINDER",
+                contact=contact,
+                action_type="DIVERTED",
+                details=f"Contact clicked '{reply_clean}'. Rule triggered STOP.",
+            )
+        else:
+            ReminderExecution.objects.filter(contact=contact, status="PENDING").update(status="DIVERTED")
+            AutomationLog.objects.create(
+                whatsapp_config=contact.whatsapp_config,
+                automation_type="REMINDER",
+                contact=contact,
+                action_type="DIVERTED",
+                details=f"Contact clicked '{reply_clean}'. Rule triggered STOP from one-off message.",
+            )
 
     elif action_type == "FOLLOWUP_REPLY" and followup_text:
-        ReminderExecution.objects.filter(
-            reminder_campaign=campaign, contact=contact
-        ).update(button_response=reply_clean)
+        if campaign:
+            ReminderExecution.objects.filter(
+                reminder_campaign=campaign, contact=contact
+            ).update(button_response=reply_clean)
         send_whatsapp_message_direct_to_meta(
             recipient_id=contact.phone_number,
             waba_config=waba_config,
@@ -3991,9 +4028,10 @@ def _execute_button_action(action_cfg, campaign, contact, waba_config, reply_cle
         )
 
     elif action_type == "SEND_TEMPLATE":
-        ReminderExecution.objects.filter(
-            reminder_campaign=campaign, contact=contact
-        ).update(button_response=reply_clean)
+        if campaign:
+            ReminderExecution.objects.filter(
+                reminder_campaign=campaign, contact=contact
+            ).update(button_response=reply_clean)
         tpl_id = action_cfg.get("template_id") or action_cfg.get("template")
         if tpl_id:
             tpl_obj = MessageTemplate.objects.filter(id=tpl_id).first()
@@ -4014,7 +4052,7 @@ def _execute_button_action(action_cfg, campaign, contact, waba_config, reply_cle
                 t_media = action_cfg.get("media_url")
                 send_automation_message(contact, tpl_obj, t_media, tpl_vars)
                 AutomationLog.objects.create(
-                    whatsapp_config=campaign.whatsapp_config,
+                    whatsapp_config=campaign.whatsapp_config if campaign else contact.whatsapp_config,
                     automation_type="REMINDER",
                     contact=contact,
                     action_type="SENT",
@@ -4022,9 +4060,10 @@ def _execute_button_action(action_cfg, campaign, contact, waba_config, reply_cle
                 )
 
     elif action_type == "TRIGGER_FOLLOWUP":
-        ReminderExecution.objects.filter(
-            reminder_campaign=campaign, contact=contact
-        ).update(button_response=reply_clean)
+        if campaign:
+            ReminderExecution.objects.filter(
+                reminder_campaign=campaign, contact=contact
+            ).update(button_response=reply_clean)
         followup_wf_id = action_cfg.get("followup_workflow_id")
         if followup_wf_id:
             wf = FollowUpWorkflow.objects.filter(
@@ -4763,6 +4802,7 @@ class WebhookEventViewSet(viewsets.ViewSet):
 
                 sender_id = _normalize_phone_number(message_data.get("from"))
                 provider_message_id = message_data.get("id")
+                context_id = message_data.get("context", {}).get("id")
 
                 # Deduplication check
                 if (
@@ -5019,6 +5059,29 @@ class WebhookEventViewSet(viewsets.ViewSet):
                 except Exception as btn_err:
                     logger.warning(f"Interconnected button response error: {btn_err}")
 
+                # Evaluate button responses for one-off/inbox messages
+                if not btn_handled and context_id:
+                    try:
+                        orig_msg = Message.objects.filter(provider_message_id=context_id).first()
+                        if orig_msg and orig_msg.button_actions:
+                            reply_lower = (text or btn_payload or "").strip().lower()
+                            payload_lower = (btn_payload or text or "").strip().lower()
+                            matched_cfg = _find_button_action_node(
+                                orig_msg.button_actions, reply_lower, payload_lower
+                            )
+                            if matched_cfg:
+                                from whatsapp_app.utils import get_whatsapp_config
+                                waba_config = get_whatsapp_config(contact.whatsapp_config_id)
+                                _execute_button_action(
+                                    matched_cfg, None, contact, waba_config, (text or btn_payload or "").strip()
+                                )
+                                btn_handled = True
+                                return Response(
+                                    {"status": "success", "message": "one_off_button_response_handled"}
+                                )
+                    except Exception as one_off_btn_err:
+                        logger.warning(f"One-off button response error: {one_off_btn_err}")
+
                 # Trigger async download if media is present
                 if media_id and config and config.whatsapp_api_token:
                     dl_thread = threading.Thread(
@@ -5102,6 +5165,15 @@ class WebhookEventViewSet(viewsets.ViewSet):
                             media_url = request.build_absolute_uri(
                                 matched_reply.media.url
                             )
+                            forwarded_host = request.META.get('HTTP_X_FORWARDED_HOST')
+                            if forwarded_host and 'localhost' in media_url:
+                                proto = 'https' if request.is_secure() or request.META.get('HTTP_X_FORWARDED_PROTO') == 'https' else 'http'
+                                media_url = f"{proto}://{forwarded_host}{matched_reply.media.url}"
+
+                        is_pdf = False
+                        if media_url:
+                            ext = (media_url or "").split('?')[0].split('.')[-1].lower()
+                            is_pdf = (ext == "pdf")
 
                         if isinstance(matched_reply.buttons, str):
                             import json
@@ -5146,7 +5218,7 @@ class WebhookEventViewSet(viewsets.ViewSet):
                                     "body": {"text": safe_text},
                                     "action": {"buttons": buttons},
                                 }
-                                if media_url:
+                                if media_url and not is_pdf:
                                     interactive_payload["header"] = {
                                         "type": "image",
                                         "image": {"link": media_url},
@@ -5184,21 +5256,21 @@ class WebhookEventViewSet(viewsets.ViewSet):
                                 }
 
                         if interactive_payload:
-                            if interactive_payload.get("type") == "list" and media_url:
-                                # Lists don't support media headers, so send the image separately first
+                            if (interactive_payload.get("type") == "list" or is_pdf) and media_url:
+                                # Lists and document headers are sent separately first
                                 send_whatsapp_message_direct_to_meta(
                                     recipient_id=sender_id,
                                     waba_config=waba_config,
                                     media_url=media_url,
-                                    media_type="image",
+                                    media_type="document" if is_pdf else "image",
                                 )
                                 Message.objects.create(
                                     contact=contact,
-                                    text="[Image Attachment]",
+                                    text="[Document Attachment]" if is_pdf else "[Image Attachment]",
                                     sender=config.phone_number_id or "Chatbot",
                                     direction="OUTGOING",
                                     status="Sent",
-                                    type="image",
+                                    type="document" if is_pdf else "image",
                                     media_url=media_url,
                                     timestamp=timezone.now(),
                                 )
@@ -5214,7 +5286,7 @@ class WebhookEventViewSet(viewsets.ViewSet):
                                 waba_config=waba_config,
                                 text=matched_reply.reply_text,
                                 media_url=media_url,
-                                media_type="image" if media_url else None,
+                                media_type="document" if is_pdf else ("image" if media_url else None),
                             )
 
                         Message.objects.create(
@@ -5410,6 +5482,16 @@ class SendWhatsAppTemplateView(APIView):
 
         if not isinstance(components, list):
             components = []
+
+        button_actions = request.data.get("button_actions")
+        if isinstance(button_actions, str):
+            import json
+            try:
+                button_actions = json.loads(button_actions)
+            except json.JSONDecodeError:
+                button_actions = {}
+        if not isinstance(button_actions, dict):
+            button_actions = {}
 
         # Resolve media URL and auto-upload if template requires image/video/document header
         custom_text = request.data.get("text")
@@ -5780,10 +5862,17 @@ class SendWhatsAppTemplateView(APIView):
                 if body_comp:
                     params = body_comp.get("parameters", [])
                     for i, p in enumerate(params):
-                        placeholder = f"{{{{{i + 1}}}}}"
                         p_val = p.get("text", "")
                         if not p_val and "currency" in p:
                             p_val = p.get("currency", {}).get("fallback_value", "")
+                        
+                        # Support named variable replacement (e.g. {{name}})
+                        param_name = p.get("parameter_name")
+                        if param_name:
+                            rendered = rendered.replace(f"{{{{{param_name}}}}}", str(p_val))
+                        
+                        # Positional replacement fallback (e.g. {{1}})
+                        placeholder = f"{{{{{i + 1}}}}}"
                         rendered = rendered.replace(placeholder, str(p_val))
             final_message_text = rendered
 
@@ -5807,6 +5896,7 @@ class SendWhatsAppTemplateView(APIView):
                 type="template",
                 media_url=display_media_url or template_media_url or None,
                 buttons=buttons_for_db,
+                button_actions=button_actions,
                 timestamp=timezone.now(),
                 failed_at=timezone.now(),
             )
@@ -5835,6 +5925,7 @@ class SendWhatsAppTemplateView(APIView):
             provider_message_id=provider_message_id,
             timestamp=timezone.now(),
             buttons=buttons_for_db,
+            button_actions=button_actions,
         )
 
         contact.last_message = final_message_text
@@ -6137,13 +6228,21 @@ class WhatsAppConfigViewSet(viewsets.ModelViewSet):
                         [config.id, getattr(user, "email", "")],
                     )
             except Exception as e:
-                logger.error(
-                    f"Failed to sync switched config ID to SaaS WhatsAppUser: {e}"
-                )
-                return Response(
-                    {"detail": f"Failed to sync active config: {str(e)}"},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
+                err_str = str(e)
+                # If the SaaS tables simply don't exist in this deployment,
+                # that's expected — skip silently and continue.
+                if "doesn't exist" in err_str or "Table" in err_str:
+                    logger.info(
+                        f"whatsapp_saas tables not present in this deployment, skipping SaaS sync."
+                    )
+                else:
+                    logger.error(
+                        f"Failed to sync switched config ID to SaaS WhatsAppUser: {e}"
+                    )
+                    return Response(
+                        {"detail": f"Failed to sync active config: {err_str}"},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
         return Response({"status": "active config synced", "config_id": config.id})
 
     @action(detail=False, methods=["get"], url_path="meta-config")
@@ -6893,9 +6992,16 @@ class AIConfigView(APIView):
 
         user_name = "Merida HR"
         if getattr(request, "user", None) and request.user.is_authenticated:
+            # HRM uses RegistrationModel which has 'Email' (capital E) and 'UserName'
+            user_email = (
+                getattr(request.user, "email", None)
+                or getattr(request.user, "Email", None)
+                or ""
+            )
             user_name = (
                 getattr(request.user, "name", "")
-                or request.user.email.split("@")[0].title()
+                or getattr(request.user, "UserName", "")
+                or (user_email.split("@")[0].title() if user_email else "Merida HR")
             )
 
         business_display = (
@@ -8450,13 +8556,35 @@ class LeadsBulkWhatsAppSendView(APIView):
     permission_classes = []  # Open — HRM auth via X-HRM-Employee-ID header
 
     def post(self, request):
-        from whatsapp_app.models import WhatsAppConfig, Contact, Message
+        from whatsapp_app.models import WhatsAppConfig, Contact, Message, MessageTemplate
         from django.utils import timezone
+        import copy
 
         config_id = request.data.get("config_id")
         template_name = request.data.get("template_name", "").strip()
         template_language = request.data.get("template_language", "en_US")
         leads = request.data.get("leads", [])
+
+        components_input = request.data.get("components")
+        button_actions_input = request.data.get("button_actions")
+
+        if isinstance(components_input, str):
+            import json
+            try:
+                components_input = json.loads(components_input)
+            except json.JSONDecodeError:
+                components_input = None
+        if not isinstance(components_input, list):
+            components_input = []
+
+        if isinstance(button_actions_input, str):
+            import json
+            try:
+                button_actions_input = json.loads(button_actions_input)
+            except json.JSONDecodeError:
+                button_actions_input = {}
+        if not isinstance(button_actions_input, dict):
+            button_actions_input = {}
 
         if not leads:
             return Response({"error": "leads list is required"}, status=400)
@@ -8520,31 +8648,70 @@ class LeadsBulkWhatsAppSendView(APIView):
 
             # Send template via Meta API
             try:
-                from whatsapp_app.utils import send_whatsapp_template_message
+                from whatsapp_app.services import send_whatsapp_message_direct_to_meta
+                from whatsapp_app.utils import resolve_contact_variables, extract_provider_message_id
 
-                result = send_whatsapp_template_message(
-                    config=wa_config,
-                    to_phone=phone_digits,
+                lead_components = copy.deepcopy(components_input)
+                # Resolve placeholders in lead_components
+                for comp in lead_components:
+                    if "parameters" in comp:
+                        for param in comp["parameters"]:
+                            if param.get("type") == "text" and "text" in param:
+                                param["text"] = resolve_contact_variables(param["text"], contact)
+
+                meta_response, status_code = send_whatsapp_message_direct_to_meta(
+                    recipient_id=contact.phone_number,
+                    waba_config=wa_config,
                     template_name=template_name,
                     language_code=template_language,
+                    components=lead_components,
                 )
-                provider_msg_id = (
-                    result.get("messages", [{}])[0].get("id") if result else None
+
+                if status_code not in [200, 201]:
+                    failed_count += 1
+                    errors.append({"phone": raw_phone, "error": f"Meta Error (HTTP {status_code}): {meta_response}"})
+                    continue
+
+                provider_msg_id = extract_provider_message_id(
+                    meta_response,
+                    fallback=None,
                 )
+
+                # Construct message text for DB
+                normalized_template_name = str(template_name).strip().lower().replace(" ", "_")
+                cached_template = MessageTemplate.objects.filter(name=normalized_template_name).first()
+                final_message_text = ""
+                if cached_template and cached_template.body:
+                    rendered = cached_template.body
+                    if lead_components:
+                        body_comp = next((c for c in lead_components if c.get("type") == "body"), None)
+                        if body_comp:
+                            params = body_comp.get("parameters", [])
+                            for i, p in enumerate(params):
+                                placeholder = f"{{{{{i + 1}}}}}"
+                                p_val = p.get("text", "")
+                                rendered = rendered.replace(placeholder, str(p_val))
+                    final_message_text = rendered
+                if not final_message_text:
+                    final_message_text = f"[Template: {template_name}]"
+
+                buttons_for_db = cached_template.buttons if (cached_template and cached_template.buttons) else []
 
                 # Record outgoing message
                 Message.objects.create(
                     contact=contact,
-                    text=f"[Template: {template_name}]",
+                    text=final_message_text,
                     sender="system",
                     direction="OUTGOING",
                     status="Sent",
                     type="template",
                     provider_message_id=provider_msg_id,
+                    buttons=buttons_for_db,
+                    button_actions=button_actions_input,
                     timestamp=timezone.now(),
                 )
                 # Update contact last message
-                contact.last_message = f"Template: {template_name}"
+                contact.last_message = final_message_text
                 contact.last_message_time = timezone.now()
                 contact.save(update_fields=["last_message", "last_message_time"])
 

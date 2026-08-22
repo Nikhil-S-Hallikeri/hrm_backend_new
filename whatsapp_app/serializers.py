@@ -446,7 +446,7 @@ class MessageTemplateSerializer(serializers.ModelSerializer):
         # <img>/<video> tag can pull the real bytes as a normal HTTP request.
         if isinstance(ret.get('header_media'), str) and ret['header_media'].startswith('data:'):
             request = self.context.get('request')
-            path = f'/templates/{instance.id}/header-media/'
+            path = f'/api/wa/templates/{instance.id}/header-media/'
             ret['header_media'] = request.build_absolute_uri(path) if request else path
 
         return ret
@@ -838,14 +838,21 @@ class AutoReplySerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'whatsapp_config', 'created_at', 'updated_at']
 
     def to_internal_value(self, data):
-        ret = super().to_internal_value(data)
-        buttons = ret.get('buttons')
-        if isinstance(buttons, str):
-            try:
-                import json
-                ret['buttons'] = json.loads(buttons)
-            except Exception:
-                pass
+        # Convert QueryDict to standard dict to prevent list truncation issues
+        if hasattr(data, 'dict'):
+            data_dict = data.dict()
+        else:
+            data_dict = dict(data)
+
+        if 'buttons' in data_dict:
+            buttons = data_dict.get('buttons')
+            if isinstance(buttons, str):
+                try:
+                    import json
+                    data_dict['buttons'] = json.loads(buttons)
+                except Exception:
+                    pass
+        ret = super().to_internal_value(data_dict)
         return ret
 
     def create(self, validated_data):
@@ -1024,6 +1031,11 @@ class ReminderCampaignSerializer(serializers.ModelSerializer):
                         setattr(sched_obj, attr, value)
                     sched_obj.save()
                     kept_schedule_ids.add(sched_id)
+                    # Reset associated FAILED executions to PENDING so they get retried
+                    ReminderExecution.objects.filter(schedule=sched_obj, status='FAILED').update(
+                        status='PENDING',
+                        retry_count=0
+                    )
                 else:
                     new_sched = ReminderSchedule.objects.create(reminder_campaign=instance, **schedule_data)
                     kept_schedule_ids.add(new_sched.id)

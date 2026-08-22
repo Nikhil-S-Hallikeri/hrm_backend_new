@@ -14,6 +14,7 @@ from rest_framework.routers import DefaultRouter
 from django.urls import include
 from .sso_views import RedirectToDASView, CheckEmployeeStatusAPI
 from .pagination_views import *  # 17/4/2026
+from .views_resume import ResumeParserViewSet
 
 
 # Router for internal HR management endpoints
@@ -24,6 +25,9 @@ manage_router.register(
 manage_router.register(r"skills", SkillManagementViewSet, basename="manage-skill")
 manage_router.register(r"jobs", JobManagementViewSet, basename="manage-job")
 
+resume_router = DefaultRouter()
+resume_router.register(r"resumes", ResumeParserViewSet, basename="resume-parser")
+
 
 # Router for the public, service-to-service API
 public_router = DefaultRouter()
@@ -31,6 +35,7 @@ public_router.register(r"jobs", PublicJobListingViewSet, basename="public-job")
 
 
 urlpatterns = [
+    path("api/", include(resume_router.urls)),
     path("job_description/", Job_Post.as_view()),
     path("log-ip/", log_ip_view, name="log_ip"),
     path("signin", RegistrationView.as_view(), name="registration"),

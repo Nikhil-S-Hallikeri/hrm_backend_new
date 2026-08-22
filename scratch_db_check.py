@@ -1,23 +1,45 @@
-import os
-import django
+import paramiko
+import sys
 
+sys.stdout.reconfigure(encoding='utf-8')
+
+host = "157.173.222.4"
+user = "root"
+password = "Meridateam@123"
+remote_dir = "/home/meridahr-hrmbackendapi/htdocs/hrmbackendapi.meridahr.com"
+venv_python = f"{remote_dir}/.venv/bin/python"
+
+# Python script to run on server that creates the table in MySQL using django's schema editor
+create_table_code = """
+import os, django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'HRM_Project.settings')
 django.setup()
 
-from HRM_App.models import NewDailyAchivesModel
+from django.db import connection
+from HRM_App.models import CandidateResumeFile
 
-leads = NewDailyAchivesModel.objects.filter(candidate_name__icontains='KUSHAL')
-print(f"Found {leads.count()} leads matching KUSHAL:")
-for lead in leads:
-    print(f"ID: {lead.id}")
-    print(f"  Name: {lead.candidate_name}")
-    print(f"  Sourcing channel: {lead.sourcing_channel}")
-    print(f"  Assigned requirement: {lead.assigned_requirement}")
-    print(f"  Created Date: {lead.Created_Date}")
-    print(f"  Activity instance details:")
-    if lead.current_day_activity and lead.current_day_activity.Activity_instance:
-        ai = lead.current_day_activity.Activity_instance
-        print(f"    Recruiter: {ai.Employee.Name if ai.Employee else None} ({ai.Employee.EmployeeId if ai.Employee else None})")
-        print(f"    Assigned by: {ai.activity_assigned_by.Name if ai.activity_assigned_by else None} ({ai.activity_assigned_by.EmployeeId if ai.activity_assigned_by else None})")
-    else:
-        print(f"    No activity instance.")
+with connection.schema_editor() as schema_editor:
+    try:
+        print("Creating table CandidateResumeFile in MySQL...")
+        schema_editor.create_model(CandidateResumeFile)
+        print("Table created successfully!")
+    except Exception as e:
+        print("Error creating table:", e)
+"""
+
+ssh = paramiko.SSHClient()
+ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+ssh.connect(host, username=user, password=password)
+
+sftp = ssh.open_sftp()
+with sftp.file(f"{remote_dir}/temp_create_table.py", "w") as f:
+    f.write(create_table_code)
+sftp.close()
+
+stdin, stdout, stderr = ssh.exec_command(f"cd {remote_dir} && {venv_python} temp_create_table.py")
+print("=== SQL EXECUTION RESULTS ===")
+print(stdout.read().decode('utf-8'))
+print(stderr.read().decode('utf-8'))
+
+ssh.exec_command(f"rm -f {remote_dir}/temp_create_table.py")
+ssh.close()

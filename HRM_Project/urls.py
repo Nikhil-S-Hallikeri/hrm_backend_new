@@ -41,6 +41,8 @@ urlpatterns = [
     # ── WhatsApp Module (NEW) ─────────────────────────────────────────────────
     path('api/wa/', include('whatsapp_app.urls')),
     path('api/chatbot/', include('chatbot_app.urls')),
+    # ── Facebook Module (NEW) ──────────────────────────────────────────────────
+    path('api/facebook/', include('facebook_app.urls')),
     # ─────────────────────────────────────────────────────────────────────────
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 

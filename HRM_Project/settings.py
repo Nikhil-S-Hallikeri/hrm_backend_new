@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt.token_blacklist',
     'whatsapp_app',
     'chatbot_app',
+    'facebook_app',
 ]
 
 
@@ -145,10 +146,10 @@ WSGI_APPLICATION = 'HRM_Project.wsgi.application'
 DATABASES = {
      'default': {  
         'ENGINE': os.environ.get('DB_ENGINE', 'django.db.backends.mysql'),
-        'NAME': os.environ.get('DB_NAME', 'hrm'),
-        'USER': os.environ.get('DB_USER', 'root'), 
-        'PASSWORD': os.environ.get('DB_PASSWORD', 'Nikhil@2001'),
-        'HOST': os.environ.get('DB_HOST', '127.0.0.1'),  
+        'NAME': os.environ.get('DB_NAME', 'HRM'),
+        'USER': os.environ.get('DB_USER', 'MeridaDatabase'), 
+        'PASSWORD': os.environ.get('DB_PASSWORD', 'Team@4321'),
+        'HOST': os.environ.get('DB_HOST', '148.230.67.218'),  
         'PORT': os.environ.get('DB_PORT', '3306'),  
         'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', 600)),    
     }

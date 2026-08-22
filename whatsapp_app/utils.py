@@ -886,7 +886,10 @@ def _broadcast_crm_event(event_type, contact=None, message=None, extra=None, pho
         webhook_url = config.get('crm_webhook_url')
         config_obj = config.get('config_obj')
         crm_api_token = config_obj.crm_api_token if (config_obj and config_obj.crm_api_token) else 'super_secret_crm_token_123'
-        tenant_email = config_obj.user.email if (config_obj and config_obj.user) else None
+        user_obj = config_obj.user if (config_obj and config_obj.user) else None
+        tenant_email = None
+        if user_obj:
+            tenant_email = getattr(user_obj, 'email', None) or getattr(user_obj, 'Email', None)
         
         # Default fallback to Node/Express running on port 9003
         if (not webhook_url or
@@ -1440,6 +1443,26 @@ Now respond to the last user message."""
             return data["choices"][0]["message"]["content"]
         except Exception as e:
             print(f"OpenAI API error: {e}")
+
+    elif provider == 'openrouter':
+        try:
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": model_name or "openrouter/auto",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 800,
+                "temperature": 0.5
+            }
+            response = requests.post(url, headers=headers, json=payload, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+        except Exception as e:
+            print(f"OpenRouter API error: {e}")
 
     models = [
         ("gemini-2.5-flash-lite", {}),
@@ -2048,13 +2071,22 @@ def send_automation_message(contact, template, media_url=None, template_variable
     elif template.header_type == 'TEXT':
         import re
         header_text_val = template.header_text or ''
-        has_header_param = bool(re.search(r'\{\{\d+\}\}', header_text_val))
+        has_header_param = re.search(r'\{\{([^}]+)\}\}', header_text_val)
         if has_header_param:
+            placeholder_name = has_header_param.group(1).strip()
             param_val = template_vars.get('header_text') or template_vars.get('header_1') or contact.name or "Customer"
             resolved_header = resolve_contact_variables(str(param_val), contact)
+            
+            param_obj = {
+                "type": "text",
+                "text": str(resolved_header)
+            }
+            if not placeholder_name.isdigit():
+                param_obj["parameter_name"] = placeholder_name
+                
             components.append({
                 "type": "header",
-                "parameters": [{"type": "text", "text": str(resolved_header)}]
+                "parameters": [param_obj]
             })
 
     # Body variables {{1}}, {{2}}, or {{text}}, etc.

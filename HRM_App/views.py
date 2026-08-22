@@ -4941,15 +4941,19 @@ class ActivityDashboardAnalyticsView(APIView):
         profiles_crm = non_bulk_records.filter(crm_q).count()
 
         # Facebook / Social Media: from Facebook or other social channels
-        facebook_q = Q(sourcing_channel="facebook") | (
-            (Q(sourcing_channel__isnull=True) | Q(sourcing_channel=""))
-            & (
-                Q(source__icontains="facebook")
-                | Q(source__icontains="meta")
-                | Q(source__icontains="social")
+        try:
+            from facebook_app.models import FacebookLead
+            profiles_facebook = FacebookLead.objects.filter(created_at__range=(start_datetime, end_datetime)).count()
+        except Exception as e:
+            facebook_q = Q(sourcing_channel="facebook") | (
+                (Q(sourcing_channel__isnull=True) | Q(sourcing_channel=""))
+                & (
+                    Q(source__icontains="facebook")
+                    | Q(source__icontains="meta")
+                    | Q(source__icontains="social")
+                )
             )
-        )
-        profiles_facebook = non_bulk_records.filter(facebook_q).count()
+            profiles_facebook = non_bulk_records.filter(facebook_q).count()
 
         # Self Added: employee manually added from Add Activity form
         self_q = Q(sourcing_channel="self_adding") | (

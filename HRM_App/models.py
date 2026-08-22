@@ -102,6 +102,28 @@ class CandidateApplicationModel(models.Model):
         print(self.pk)
         return self.CandidateId
     
+def candidate_resume_path(instance, filename):
+    import os
+    import uuid
+    ext = filename.split('.')[-1]
+    filename = f"{uuid.uuid4()}.{ext}"
+    return os.path.join('resumes', filename)
+
+class CandidateResumeFile(models.Model):
+    candidate = models.OneToOneField(CandidateApplicationModel, on_delete=models.CASCADE, related_name='resume_file')
+    file = models.FileField(upload_to=candidate_resume_path)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def delete(self, *args, **kwargs):
+        import os
+        if self.file and os.path.isfile(self.file.path):
+            try:
+                os.remove(self.file.path)
+            except Exception:
+                pass
+        super().delete(*args, **kwargs)
+
+    
 class Deparments(models.Model):
     Dep_Name=models.CharField(max_length=100,unique=True,default='')
 

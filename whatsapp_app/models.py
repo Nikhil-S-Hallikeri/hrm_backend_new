@@ -248,6 +248,7 @@ class Message(models.Model):
     read_at = models.DateTimeField(null=True, blank=True)
     failed_at = models.DateTimeField(null=True, blank=True)
     buttons = models.JSONField(null=True, blank=True)
+    button_actions = models.JSONField(default=dict, blank=True)
 
     
     class Meta:
@@ -527,7 +528,7 @@ class AutoReply(models.Model):
     whatsapp_config = models.ForeignKey('WhatsAppConfig', on_delete=models.CASCADE, related_name='autoreplies')
     keywords = models.TextField(help_text="Comma-separated list of keywords")
     reply_text = models.TextField()
-    media = models.ImageField(upload_to='autoreplies/', blank=True, null=True, help_text="Optional media (e.g. QR code) to send with the auto-reply")
+    media = models.FileField(upload_to='autoreplies/', blank=True, null=True, help_text="Optional media (e.g. PDF, image) to send with the auto-reply")
     buttons = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

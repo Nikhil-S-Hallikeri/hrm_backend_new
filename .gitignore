@@ -8,6 +8,10 @@ __pycache__/
 myenve/
 venv/
 env/
+.venv/
+*.db
+*.sqlite
+leads_captured.txt
 
 # Django
 *.log

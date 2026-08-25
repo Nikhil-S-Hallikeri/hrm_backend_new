@@ -7330,7 +7330,30 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         config_id = get_whatsapp_config_id(self.request)
-        serializer.save(whatsapp_config_id=config_id)
+        doc = serializer.save(whatsapp_config_id=config_id)
+        
+        # Process document exactly 1 time upon upload into knowledge base
+        try:
+            if not doc.is_processed and doc.file:
+                import requests
+                from django.conf import settings
+                from django.utils import timezone
+                
+                chatbot_url = getattr(settings, "CHATBOT_SERVICE_URL", "http://localhost:8002").rstrip("/")
+                headers = {}
+                ingestion_token = getattr(settings, "INGESTION_API_TOKEN", None) or getattr(settings, "CHATBOT_INGESTION_TOKEN", None)
+                if ingestion_token:
+                    headers["X-Ingestion-Token"] = ingestion_token
+                    
+                doc.file.open('rb')
+                files = {"file": (doc.file_name, doc.file.read(), "application/octet-stream")}
+                resp = requests.post(f"{chatbot_url}/knowledge/rebuild", headers=headers, files=files, timeout=60)
+                if resp.status_code == 200:
+                    doc.is_processed = True
+                    doc.processed_at = timezone.now()
+                    doc.save(update_fields=['is_processed', 'processed_at'])
+        except Exception as err:
+            print(f"Auto-processing knowledge document {doc.file_name} failed: {err}")
 
 
 class GeneratePromptView(APIView):

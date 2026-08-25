@@ -1217,6 +1217,7 @@ def generate_gemini_response(history, waba_config):
     Natively calls Google Gemini, Groq, or OpenAI API to get the structured auto-reply text.
     """
     from whatsapp_app.models import AIConfig
+    import json
     ai_conf = None
     config_obj = waba_config.get('config_obj')
     if config_obj:
@@ -1229,180 +1230,58 @@ def generate_gemini_response(history, waba_config):
     model_name = ai_conf.model_name if (ai_conf and ai_conf.model_name) else None
     api_key = ai_conf.api_key if (ai_conf and ai_conf.api_key) else waba_config.get('gemini_api_key')
 
-    if not api_key:
-        return "Hello! I am a basic WhatsApp Bot. (Configure LLM API Key in the CRM panel for AI qualification)"
-        
     api_key = api_key.split()[0].strip()
-    state = parse_conversation_state(history)
-
-    step = state["step"]
-    
-    extra_instruction = ""
-    if step == 1:
-        extra_instruction = (
-            "\n\n### CRITICAL CURRENT FLOW CONSTRAINT ###\n"
-            "We are at Step 1: Pathway Selection.\n"
-            "You MUST ask them to select one of the three service paths.\n"
-            "You MUST present the paths using exactly this options tag verbatim:\n"
-            "### OPTIONS: Skill Enhancement, Trading Academy, Jobs ###\n"
-            "Do NOT ask for their name, phone, or email yet. Do NOT use any other wording or button labels.\n"
-        )
-    elif step == 2:
-        extra_instruction = (
-            f"\n\n### CRITICAL CURRENT FLOW CONSTRAINT ###\n"
-            f"We are at Step 2: Collecting the user's NAME.\n"
-            f"The user's selected path is '{state['path']}'.\n"
-            f"You MUST politely ask the user for their full name as a friendly, polite question.\n"
-            f"Do NOT ask for their phone or email yet.\n"
-            f"You MUST COMPLETELY OMIT the '### OPTIONS' tag from your response. Do not output any options.\n"
-        )
-    elif step == 3:
-        extra_instruction = (
-            f"\n\n### CRITICAL CURRENT FLOW CONSTRAINT ###\n"
-            f"We are at Step 3: Collecting the user's PHONE NUMBER.\n"
-            f"The user's name is '{state['name']}'.\n"
-            f"You MUST ask the user to type their phone number directly as a single clear question.\n"
-            f"Do NOT ask if they prefer 'Call' or 'Text', and do NOT offer options.\n"
-            f"You MUST COMPLETELY OMIT the '### OPTIONS' tag from your response. Do not output any options.\n"
-        )
-    elif step == 4:
-        extra_instruction = (
-            f"\n\n### CRITICAL CURRENT FLOW CONSTRAINT ###\n"
-            f"We are at Step 4: Collecting the user's EMAIL ADDRESS.\n"
-            f"The user's name is '{state['name']}' and phone is '{state['phone']}'.\n"
-            f"You MUST ask the user to type their email address directly as a single clear question.\n"
-            f"You MUST COMPLETELY OMIT the '### OPTIONS' tag from your response. Do not output any options.\n"
-        )
-    elif (state["path"] in ["Skill Enhancement", "Jobs"] and 
-          len(state["answers"]) == 1 and 
-          state["answers"][0].lower() == "other"):
-        extra_instruction = (
-            f"\n\n### CRITICAL CURRENT FLOW CONSTRAINT ###\n"
-            f"The user's selected path is: '{state['path']}'.\n"
-            f"The user selected 'Other' for the domain/role.\n"
-            f"You MUST immediately ask them to type/specify their desired domain or role directly.\n"
-            f"You MUST COMPLETELY OMIT the '### OPTIONS' tag from your response. Do not output any options.\n"
-        )
-    elif 5 <= step <= 13:
-        q_idx = len(state["answers"])
-        path_name = state["path"]
-        path_questions = QUESTIONS_CONFIG.get(path_name, []) if isinstance(path_name, str) else []
-        if q_idx < len(path_questions):
-            opts_list = path_questions[q_idx]["options"]
-            options_tag = f"### OPTIONS: {', '.join(opts_list)} ###"
-            extra_instruction = (
-                f"\n\n### CRITICAL CURRENT FLOW CONSTRAINT ###\n"
-                f"The user's selected path is: '{state['path']}'.\n"
-                f"We are at path-specific Question {4 + q_idx}.\n"
-                f"You MUST ask the next question: Question {4 + q_idx} for the '{state['path']}' pathway.\n"
-                f"You MUST present the options using exactly this options tag verbatim:\n"
-                f"{options_tag}\n"
-                f"Do NOT use any other wording or button labels.\n"
-                f"Ask exactly one question. Do not ask multiple questions.\n"
-            )
-    elif step == 14:
-        extra_instruction = (
-            f"\n\n### CRITICAL CURRENT FLOW CONSTRAINT ###\n"
-            f"All 12 qualification questions have been asked and answered!\n"
-            f"Thank them and politely tell them a counselor/advisor will reach out shortly.\n"
-            f"Do not output any score or classification. Only output the final JSON metadata block exactly as described in the instructions.\n"
-        )
-        
     history_text = "\n".join([
         f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['text']}"
         for m in history
     ])
     
-    prompt = f"""You are a helpful and friendly WhatsApp AI assistant representing **Merida Tech Minds**, which operates the **Skill Learning Academy** (professional tech training), **Fortune Trading Academy** (stock market & trading training), and corporate recruitment.
+    custom_system_prompt = (ai_conf.system_prompt or "").strip() if ai_conf else ""
+    custom_description = (ai_conf.prompt or "").strip() if ai_conf else ""
+    business_name = (ai_conf.business_name or "Merida HR").strip() if ai_conf else "Merida HR"
+    assistant_name = (ai_conf.assistant_name or "Aria").strip() if ai_conf else "Aria"
+    
+    system_instructions = custom_system_prompt if custom_system_prompt else (
+        f"You are {assistant_name}, AI assistant for {business_name}.\n"
+        "Role: Professional HR & Workforce Solutions Consultant. Sound professional, approachable, knowledgeable, empathetic, and trustworthy."
+    )
 
-Your primary goal is to guide the user through exactly **12 qualification questions** (3 core questions + 9 path-specific questions) in a friendly, conversational manner, one or two at a time.
+    contact = waba_config.get('contact')
+    contact_memory_text = ""
+    if contact:
+        c_name = contact.name if (contact.name and contact.name != "Unknown" and contact.name != contact.phone_number) else "Not provided yet"
+        c_phone = contact.phone_number or "Unknown"
+        c_email = contact.email or "Not provided yet"
+        c_attrs = json.dumps(contact.attributes, ensure_ascii=False) if (contact.attributes and isinstance(contact.attributes, dict)) else "None"
+        contact_memory_text = f"""
+### KNOWN USER PROFILE & PERSISTENT SESSION MEMORY:
+- Full Name: {c_name}
+- Phone Number: {c_phone}
+- Email Address: {c_email}
+- Saved Attributes & Memory: {c_attrs}
+"""
 
-### THE THREE PATHS:
-1. ðŸ–¥ï¸ **Skill Enhancement (Skill Learning Academy):** Offers AI-integrated tech courses (Python, Java, MERN, MEAN, Data Science, Data Analytics, Cloud & Testing, Digital Marketing). Website: skilllearningacademy.com
-2. ðŸ“ˆ **Trading Academy (Fortune Trading Academy):** Offers stock market foundation, Technical Analysis, Options Trading & Hedging, Intraday strategies. Website: fortunetradingacademy.com
-3. ðŸ’¼ **Jobs (Corporate Careers):** Hires for internal roles (AI/ML Engineer, Data Scientist, Spoken English Trainer, HR, Digital Marketing, Front Office Admin, Telecaller). Website: meridatechminds.com, apply via careers@meridatechminds.com
+    prompt = f"""{system_instructions}
 
----
-
-### THE 12-QUESTION QUALIFICATION FLOW:
-
-**Step 1:** Ask them to choose their **Path** (Skill Enhancement, Trading Academy, or Jobs).
-**Step 2:** Ask for their **Name**.
-**Step 3:** Ask for their **Phone Number**.
-**Step 4:** Ask for their **Email Address**.
-**Steps 5 to 13:** Present the 9 path-specific questions one-by-one based on their chosen path:
-
-#### ðŸ–¥ï¸ Path 1: Skill Enhancement
-5. Which specific technical domain are you looking to master? (Web Development, Data Analytics, Machine Learning, UI/UX Design, Other)
-6. How would you describe your current experience level in this area? (Complete Beginner, Intermediate/Basics, Advanced Level)
-7. What is your preferred timeline to begin your training program? (Right Away / Direct, Within 30 Days, Planning for Later)
-8. Are you interested in earning an industry-recognized professional certification? (Yes, No)
-9. How would you define your dedication to completing this learning track? (Fully Dedicated, Moderately Active, Just Exploring)
-10. What is your primary objective or goal for taking this course? (Career Transition, Upskillment, Gain Experience)
-11. Which learning format best fits your daily schedule? (Live Mentor-Guided, Self-Paced Learning)
-12. Are you looking for career support and job placement assistance? (Yes, No)
-13. Would you like one of our academic counselors to call you with more details? (Yes, No)
-
-#### ðŸ“ˆ Path 2: Trading Academy
-5. Do you have any prior experience trading in the financial markets? (Yes, No)
-6. How would you grade your understanding of market analysis and trading strategies? (Complete Beginner, Intermediate Level, Advanced Level)
-7. What is your planned capital allocation or investment size for trading? (Premium Capital, Standard Capital, Starter Capital)
-8. How would you describe your risk tolerance and management preference? (High Risk Growth, Balanced/Moderate, Low Risk Capital)
-9. What is your ultimate goal and seriousness towards becoming a trader? (Full-time, Casual, Just Exploring)
-10. Are you looking to focus on short-term trading (Intraday) or long-term wealth building? (Both Strategies, Short-Term Focus, Long-Term Focus)
-11. How much time are you able to dedicate to analyzing the markets on a daily basis? (Daily, Sometimes, Limited)
-12. Are you interested in a structured 1-on-1 mentorship program with experienced traders? (Yes, No)
-13. Would you like a senior trading expert to call you for a free strategy session? (Yes, No)
-
-#### ðŸ’¼ Path 3: Jobs
-5. Which professional career track or role are you looking to apply for? (Software Engineer, Data Analyst, Product Manager, Other)
-6. How many years of professional experience do you have in this field? (5+ Years Experience, 3 to 5 Years, 1 to 3 Years, Fresher / Graduate)
-7. What is your target timeline or urgency for joining our team? (Immediate Joiner, Within 1-2 Months, Just Exploring)
-8. Are you actively applying and interviewing with other organizations? (Yes, actively, No, not currently)
-9. How would you rate your readiness for a technical or management interview? (Fully Prepared, Needs Preparation, Not Ready Yet)
-10. Which package range corresponds with your expected salary bracket? (Entry Level, Mid Level, Senior)
-11. Are you open to relocating to our office locations if required? (Open to Relocate, No, remote only)
-12. Do you feel you possess the required technical skills for the role? (Yes, fully skilled, Most core skills, Not skilled yet)
-13. Would you like to schedule a quick 10-minute screening call with our HR coordinator? (Yes, No)
-
----
-
-### BEHAVIORAL INSTRUCTIONS:
-- **INTRODUCTORY GREETING (STRICT):** When the user first messages you, introduce yourself briefly and professionally, and immediately ask them how you can help by providing the three paths. Use a format similar to: *"Hello! ðŸ‘‹ Welcome to Merida Tech Minds. I'm your AI Assistant. How can I help you today?"* Then provide the options using the tag `### OPTIONS: Skill Enhancement, Trading Academy, Jobs ###`.
-- Ask the questions naturally in a friendly, conversational manner. **Never ask multiple questions at once.** Ask one question, wait for their answer, then ask the next.
-- **STRICT OPEN-ENDED STEPS (CRITICAL):** Steps 2 (Name), 3 (Phone Number), and 4 (Email) are strictly open-ended. You MUST NEVER output the `### OPTIONS` tag or any buttons for these steps. Simply ask the user to type their detail directly. Specifically:
-  * For Step 3 (Phone Number): Do NOT ask if the user prefers Call or Text, do NOT mention 'Call' or 'Text', and do NOT offer 'Call' or 'Text' as options. Ask them to type their phone number directly as a single clear question.
-  * For Step 4 (Email): Do NOT offer any options or buttons. Ask them to type their email address directly as a single clear question.
-  * Always make sure to write full, grammatically complete sentences and questions. Do not stop generating mid-sentence.
-- **STRICT TOPIC LIMITATION (GUARDRAILS):** You are EXCLUSIVELY authorized to discuss Merida Tech Minds, Academy Courses, and Career Coaching. If the user asks a general knowledge, math, trivia, cooking, or any other out-of-scope question unrelated to our brand, YOU MUST POLITELY REFUSE to answer and redirect them back to Merida Academy immediately.
-- **CRITICAL STOP RULE:** Stop generating text IMMEDIATELY after you ask a single question! Do NOT invent, predict, or simulate the user's response. Wait for the real user to reply.
-- When all 12 questions are completed, thank them and tell them a counselor will reach out shortly.
-- **POST-COMPLETION RULE:** Once the flow is finalized, it remains closed. If the user messages again after completion, switch to standard helpful customer support mode for Merida Tech Minds. DO NOT REPEAT PREVIOUS QUESTIONS OR ASK FOR ANOTHER CALLBACK! Simply answer their specific new inquiry about the company.
-- **DYNAMIC UI TAGGING:** Only use this tag when presenting specific predefined choices (like paths, Yes/No, skill levels). Format: `### OPTIONS: Option A, Option B ###`. If you are asking an open-ended question where the user must type their own answer (like Name, Phone Number, Email, or budget), you MUST completely OMIT the `### OPTIONS` tag from your response. Do not invent options like 'Text Input'.
-- **PATH SELECTION BUTTON LABELS (CRITICAL):** When presenting the three service paths in Step 1, you MUST use EXACTLY these button labels â€” no other wording is allowed: `Skill Enhancement`, `Trading Academy`, `Jobs`. These must appear verbatim in the OPTIONS tag like this: `### OPTIONS: Skill Enhancement, Trading Academy, Jobs ###`. When the user replies with one of these labels, route them to the correct path: 'Skill Enhancement' -> Path 1 (Upskilling), 'Trading Academy' -> Path 2 (Trading), 'Jobs' -> Path 3 (Jobs).
-- **DYNAMIC 'OTHER' HANDLING RULE:** For Question 5 in both the Upskilling and Jobs paths, the choices include 'Other'. If the user clicks or replies with 'Other', you must immediately ask them to specify and type their desired domain/role (omit the `### OPTIONS` tag here since they must type a custom answer). Once they respond with their typed choice, capture it, and then proceed directly to Question 6.
-- **CRITICAL DATA EXPORT RULE:** You MUST ONLY output the JSON metadata block at the VERY END of the conversation, AFTER all 12 questions have been fully asked and answered. DO NOT output the JSON block early while you are still gathering information. During the questioning phase, focus strictly on asking the questions.
-- **IMPORTANT MAPPING RULE:** Based on the conversation context, assign a simple logical category like "Student", "Professional", or "Enterprise". Do not use B2B/B2C terminology.
-```json
-### LEAD_METADATA ###
-{{
-  "name": "User Name",
-  "phone_number": "Phone Number",
-  "email": "Email Address (Leave blank if missing)",
-  "category": "User Category",
-  "courses": "Requested courses (if applicable)",
-  "services": "Requested services (if applicable)",
-  "path": "Upskilling/Trading/Jobs",
-  "summary": "Short conversational summary of their goals"
-}}
-```
-
-Conversation so far:
+### COMPANY DESCRIPTION & BUSINESS CONTEXT:
+{custom_description if custom_description else 'Merida HR is an AI-powered HR consulting and workforce solutions company offering Recruitment, Staffing, RPO, HR Outsourcing, and Payroll services.'}
+{contact_memory_text}
+### CONVERSATION HISTORY:
 {history_text}
 
-{extra_instruction}
+### RESPONSE RULES:
+1. STRICT FACTUAL GROUNDING: Treat ONLY details explicitly provided by the user in this transcript or listed under KNOWN USER PROFILE & PERSISTENT SESSION MEMORY as absolute facts. NEVER fabricate, assume, guess, or invent candidate details (name, experience, company, salary, location) to please anyone.
+2. Speak naturally, warmly, and concisely (under 70 words unless explaining a service).
+3. Ask only ONE question in each reply. Wait for the user to reply before asking another.
+4. Do not send repetitive greetings or prefix responses with the user's name if it sounds unnatural.
+5. WHATSAPP PHONE NUMBER RULE: The user is messaging over WhatsApp, so their phone number is ALREADY KNOWN. NEVER ask the user to provide, share, or confirm their phone number for recruiter calls or updates, as you already have their WhatsApp number.
+6. USER NAME & MEMORY RULE: If the user asks for their name ("What's my name?"), email, or details, ALWAYS use the profile info under KNOWN USER PROFILE & PERSISTENT SESSION MEMORY. If Full Name is known (e.g. Ayush Srivastava), reply directly: "Your name is Ayush Srivastava." If a detail is missing, state clearly that it has not been recorded yet.
+7. If you want to present quick-reply choices to the user, include them at the very end of your message using the tag format:
+   ### OPTIONS: Option 1, Option 2, Option 3 ###
+8. Never guarantee employment, interviews, candidate selection, or hiring timelines.
+9. Never invent job openings, pricing, client names, or legal policies.
 
-Now respond to the last user message."""
+Now respond directly and naturally to the last user message."""
 
     if provider == 'groq':
         try:
@@ -1526,7 +1405,8 @@ def process_and_reply_directly(contact, incoming_text):
         # Fetch conversation history from DATABASE
         history = parse_database_conversation_history(contact)
         
-        # Request Gemini to generate a response
+        # Request Gemini to generate a response with full contact memory context
+        waba_config['contact'] = contact
         reply_text = generate_gemini_response(history, waba_config)
         
         # Process qualification state
@@ -1535,7 +1415,41 @@ def process_and_reply_directly(contact, incoming_text):
         
         clean_reply = reply_text
         lead_data = None
+        option_strings = []
         
+        # 0. Handle structured JSON output from LLM
+        try:
+            raw_text = (reply_text or "").strip()
+            if raw_text.startswith("```"):
+                raw_text = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_text, flags=re.IGNORECASE).strip()
+            if raw_text.startswith("{") and raw_text.endswith("}"):
+                parsed_json = json.loads(raw_text)
+                if isinstance(parsed_json, dict) and "answer" in parsed_json:
+                    clean_reply = parsed_json["answer"]
+                    if parsed_json.get("quick_replies") and isinstance(parsed_json["quick_replies"], list):
+                        option_strings = [str(opt).strip() for opt in parsed_json["quick_replies"] if str(opt).strip()]
+
+                    # Update contact profile & attributes from extracted structured data
+                    extracted_fields = parsed_json.get("extracted") or {}
+                    if isinstance(extracted_fields, dict):
+                        if not contact.attributes or not isinstance(contact.attributes, dict):
+                            contact.attributes = {}
+                        attrs_updated = False
+                        for k, v in extracted_fields.items():
+                            if v and str(v).strip() and k not in ("name", "email", "phone"):
+                                contact.attributes[k] = v
+                                attrs_updated = True
+                        if extracted_fields.get("name") and (not contact.name or contact.name == "Unknown"):
+                            contact.name = extracted_fields["name"]
+                            attrs_updated = True
+                        if extracted_fields.get("email") and not contact.email:
+                            contact.email = extracted_fields["email"]
+                            attrs_updated = True
+                        if attrs_updated:
+                            contact.save(update_fields=['name', 'email', 'attributes'])
+        except Exception:
+            pass
+
         # 1. Check for Lead Metadata JSON exports at step 14
         if "### LEAD_METADATA ###" in reply_text:
             parts = reply_text.split("### LEAD_METADATA ###")
@@ -1547,7 +1461,7 @@ def process_and_reply_directly(contact, incoming_text):
             
             try:
                 lead_data = json.loads(metadata_str)
-                print(f"ðŸ”¥ [NATIVE LEAD CAPTURED]: {lead_data}")
+                print(f"🔥 [NATIVE LEAD CAPTURED]: {lead_data}")
                 
                 # Write to local file for diagnostic purposes
                 with open("leads_captured.txt", "a", encoding="utf-8") as f:
@@ -1562,36 +1476,25 @@ def process_and_reply_directly(contact, incoming_text):
                 if not contact.attributes:
                     contact.attributes = {}
                     
-                for key in ["category", "courses", "summary"]:
-                    if lead_data.get(key):
+                for key in lead_data:
+                    if lead_data[key] and key not in ("name", "email", "phone"):
                         contact.attributes[key] = lead_data[key]
                         
                 contact.save(update_fields=['name', 'email', 'attributes'])
             except Exception as e:
                 print(f"Error parsing native lead metadata: {e}")
 
-        # 2. Extract Dynamic UI Interactive Buttons
+        # 2. Extract Dynamic UI Interactive Buttons from ### OPTIONS: ... ### tag if not already found from JSON
         interactive_payload = None
-        option_strings = []
+        if not option_strings:
+            options_match = re.search(r"### OPTIONS:\s*(.*?)###", reply_text, re.DOTALL | re.IGNORECASE)
+            if options_match:
+                raw_opts = options_match.group(1).strip()
+                option_strings = [opt.strip() for opt in raw_opts.split(",") if opt.strip()]
         
         # Clean standard option tags from text
-        clean_reply = re.sub(r"### OPTIONS:.*?###", "", clean_reply).strip()
+        clean_reply = re.sub(r"### OPTIONS:.*?###", "", clean_reply, flags=re.DOTALL | re.IGNORECASE).strip()
         clean_reply = re.sub(r"[\ufe00-\ufe0f]", "", clean_reply)
-        
-        if step == 1:
-            option_strings = ["Skill Enhancement", "Trading Academy", "Jobs"]
-        elif step in [2, 3, 4]:
-            option_strings = []
-        elif (state["path"] in ["Skill Enhancement", "Jobs"] and 
-              len(state["answers"]) == 1 and 
-              state["answers"][0].lower() == "other"):
-            option_strings = []
-        elif 5 <= step <= 13:
-            q_idx = len(state["answers"])
-            path_name = state["path"]
-            path_questions = QUESTIONS_CONFIG.get(path_name, []) if isinstance(path_name, str) else []
-            if q_idx < len(path_questions):
-                option_strings = path_questions[q_idx]["options"]
         
         # Strip option bullet points from message text body
         if option_strings:
@@ -1807,8 +1710,14 @@ def process_and_reply_with_aria_core(contact, incoming_text, provider_message_id
             contact.aria_journey_stage = journey["current_stage"]
             update_fields.append("aria_journey_stage")
         if profile.get("name") and contact.name != profile["name"]:
-            contact.name = profile["name"]
-            update_fields.append("name")
+            new_name = profile["name"].strip()
+            # Do not accept greeting words like "There" or "Hello" as names
+            if new_name.lower() not in ("there", "hello", "hi", "hey", "howyou", "how you doing", "unknown"):
+                curr_words = len((contact.name or "").split())
+                new_words = len(new_name.split())
+                if not contact.name or contact.name == "Unknown" or new_words > curr_words:
+                    contact.name = new_name
+                    update_fields.append("name")
         if profile.get("email") and contact.email != profile["email"]:
             contact.email = profile["email"]
             update_fields.append("email")

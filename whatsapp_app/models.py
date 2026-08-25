@@ -584,6 +584,8 @@ class KnowledgeDocument(models.Model):
     whatsapp_config = models.ForeignKey('WhatsAppConfig', on_delete=models.CASCADE, related_name='knowledge_documents')
     file = models.FileField(upload_to='knowledge_docs/')
     file_name = models.CharField(max_length=255)
+    is_processed = models.BooleanField(default=False)
+    processed_at = models.DateTimeField(null=True, blank=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

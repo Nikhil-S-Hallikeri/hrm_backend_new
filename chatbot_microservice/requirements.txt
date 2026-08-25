@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+openai
+python-dotenv
+beautifulsoup4
+requests
+pypdf
+python-docx
+playwright
+pydantic[email]
+email-validator
+python-multipart
+

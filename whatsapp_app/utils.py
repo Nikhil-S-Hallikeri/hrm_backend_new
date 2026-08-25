@@ -1197,17 +1197,47 @@ def parse_conversation_state(history):
 def parse_database_conversation_history(contact):
     """
     Retrieves the chronological message history for a Contact directly from the database,
-    returning a list of standardized dictionary formats for the Gemini processor.
+    enriching outgoing messages with origin tags (Campaign, Reminder Campaign, Human Agent, Auto-Reply)
+    and attachment details (Document, Image, JD file) so the AI has 100% full awareness of all outbound communications.
     """
     from whatsapp_app.models import Message
-    # Fetch messages sorted by timestamp/created_at
-    messages = Message.objects.filter(contact=contact).order_by('timestamp', 'created_at')
+    messages = Message.objects.filter(contact=contact).select_related('campaign').order_by('timestamp', 'created_at')
     history = []
     
     for msg in messages:
-        # Standardize echoback / direction parsing
-        role = 'bot' if msg.direction == 'OUTGOING' else 'user'
-        history.append({"role": role, "text": msg.text or ""})
+        if msg.direction == 'INCOMING':
+            history.append({"role": "user", "text": msg.text or ""})
+        else:
+            # Determine outbound origin tag
+            origin_tag = ""
+            if msg.campaign:
+                title = getattr(msg.campaign, 'title', None) or getattr(msg.campaign, 'name', '') or "Campaign"
+                camp_type = "Reminder Campaign" if ("reminder" in title.lower() or "reminder" in (msg.sender or "").lower()) else "Campaign"
+                origin_tag = f"[{camp_type}: \"{title}\"]"
+            elif msg.sender in ("AutoReply", "Auto-Reply", "System"):
+                origin_tag = "[Auto-Reply System]"
+            elif msg.sender in ("Admin", "Human", "Agent", "HR", "Support") or (msg.sender and msg.sender != "AI" and not msg.sender.startswith("91")):
+                origin_tag = f"[Human HR Agent ({msg.sender})]"
+            else:
+                origin_tag = "[AI Assistant]"
+
+            # Determine attachment tag
+            attachment_tag = ""
+            if msg.type == 'document' or msg.media_url:
+                file_name = ""
+                if msg.media_url:
+                    file_name = msg.media_url.split("/")[-1].split("?")[0]
+                attachment_name = file_name if file_name else "Attached Document/File"
+                attachment_tag = f" [Attachment: {attachment_name}]"
+                if msg.caption:
+                    attachment_tag += f" (Caption: \"{msg.caption}\")"
+            elif msg.type == 'image':
+                attachment_tag = " [Image Attachment]"
+            elif msg.type == 'template':
+                attachment_tag = " [Template Message]"
+
+            full_text = f"{origin_tag}{attachment_tag} {msg.text or ''}".strip()
+            history.append({"role": "bot", "text": full_text})
         
     return history
 
@@ -1271,15 +1301,19 @@ def generate_gemini_response(history, waba_config):
 
 ### RESPONSE RULES:
 1. STRICT FACTUAL GROUNDING: Treat ONLY details explicitly provided by the user in this transcript or listed under KNOWN USER PROFILE & PERSISTENT SESSION MEMORY as absolute facts. NEVER fabricate, assume, guess, or invent candidate details (name, experience, company, salary, location) to please anyone.
-2. Speak naturally, warmly, and concisely (under 70 words unless explaining a service).
-3. Ask only ONE question in each reply. Wait for the user to reply before asking another.
-4. Do not send repetitive greetings or prefix responses with the user's name if it sounds unnatural.
-5. WHATSAPP PHONE NUMBER RULE: The user is messaging over WhatsApp, so their phone number is ALREADY KNOWN. NEVER ask the user to provide, share, or confirm their phone number for recruiter calls or updates, as you already have their WhatsApp number.
-6. USER NAME & MEMORY RULE: If the user asks for their name ("What's my name?"), email, or details, ALWAYS use the profile info under KNOWN USER PROFILE & PERSISTENT SESSION MEMORY. If Full Name is known (e.g. Ayush Srivastava), reply directly: "Your name is Ayush Srivastava." If a detail is missing, state clearly that it has not been recorded yet.
-7. If you want to present quick-reply choices to the user, include them at the very end of your message using the tag format:
+2. OUTBOUND MESSAGES, CAMPAIGNS & ATTACHMENT AWARENESS:
+   - Outbound messages in history are tagged with their origin: [Campaign: "..."], [Reminder Campaign: "..."], [Auto-Reply System], [Human HR Agent], or [AI Assistant]. Understand what has already been sent to the user from your organization's end.
+   - ATTACHMENT POSITION (ABOVE VS. BELOW): If a document, JD file, image, or template was ALREADY sent in a prior message in history (above the current turn), refer to it as "in the attachment above" or "sent above". If an automated auto-reply or system rule is attaching a document/JD file alongside/after this message, refer to it as "in the attachment below".
+   - CONFLICT & DUPLICATION PREVENTION: If a Human HR Agent or Auto-Reply System has ALREADY answered the user's request in history, do NOT repeat the same answer or send conflicting information. Acknowledge what was sent gracefully.
+3. Speak naturally, warmly, and concisely (under 70 words unless explaining a service).
+4. Ask only ONE question in each reply. Wait for the user to reply before asking another.
+5. Do not send repetitive greetings or prefix responses with the user's name if it sounds unnatural.
+6. WHATSAPP PHONE NUMBER RULE: The user is messaging over WhatsApp, so their phone number is ALREADY KNOWN. NEVER ask the user to provide, share, or confirm their phone number for recruiter calls or updates, as you already have their WhatsApp number.
+7. USER NAME & MEMORY RULE: If the user asks for their name ("What's my name?"), email, or details, ALWAYS use the profile info under KNOWN USER PROFILE & PERSISTENT SESSION MEMORY. If Full Name is known (e.g. Ayush Srivastava), reply directly: "Your name is Ayush Srivastava." If a detail is missing, state clearly that it has not been recorded yet.
+8. If you want to present quick-reply choices to the user, include them at the very end of your message using the tag format:
    ### OPTIONS: Option 1, Option 2, Option 3 ###
-8. Never guarantee employment, interviews, candidate selection, or hiring timelines.
-9. Never invent job openings, pricing, client names, or legal policies.
+9. Never guarantee employment, interviews, candidate selection, or hiring timelines.
+10. Never invent job openings, pricing, client names, or legal policies.
 
 Now respond directly and naturally to the last user message."""
 

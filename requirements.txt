@@ -1,0 +1,66 @@
+# --- Django Core & Web Framework ---
+Django>=4.2,<6.0
+daphne
+channels
+channels-redis
+django-cors-headers
+djangorestframework
+django-filter
+djangorestframework-simplejwt
+django-apscheduler
+django-celery-beat
+celery
+redis
+
+# --- Database & Drivers ---
+PyMySQL
+sqlparse
+asgiref
+
+# --- Data Processing & Excel ---
+numpy
+pandas
+openpyxl
+XlsxWriter
+
+# --- PDF, Documents & Image Processing ---
+Pillow
+python-docx
+docx2txt
+pdfplumber
+pdf2image
+pdfkit
+PyPDF2
+pypdf
+PyMuPDF
+reportlab
+beautifulsoup4
+lxml
+pypandoc
+pytesseract
+
+# --- Utilities & Service Clients ---
+python-dotenv
+python-dateutil
+pytz
+tzdata
+tzlocal
+requests
+urllib3
+geoip2
+geocoder
+geopy
+user-agents
+python-slugify
+paramiko
+APScheduler
+certifi
+chardet
+charset-normalizer
+idna
+six
+
+# --- Chatbot / AI Microservice ---
+fastapi
+pydantic
+openai

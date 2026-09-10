@@ -1,0 +1,797 @@
+from django.urls import path
+from .views import *
+from .location import *
+from .downloads import *
+from .notifications import *
+from .search import *
+from .activity import *
+from .wish_notification import *
+from .admin_view import *
+from django.conf import settings
+from django.conf.urls.static import static
+from HRM_App.wish_notification import *
+from rest_framework.routers import DefaultRouter
+from django.urls import include
+from .sso_views import RedirectToDASView, CheckEmployeeStatusAPI
+from .pagination_views import *  # 17/4/2026
+from .views_resume import ResumeParserViewSet
+
+
+# Router for internal HR management endpoints
+manage_router = DefaultRouter()
+manage_router.register(
+    r"companies", CompanyManagementViewSet, basename="manage-company"
+)
+manage_router.register(r"skills", SkillManagementViewSet, basename="manage-skill")
+manage_router.register(r"jobs", JobManagementViewSet, basename="manage-job")
+
+resume_router = DefaultRouter()
+resume_router.register(r"resumes", ResumeParserViewSet, basename="resume-parser")
+
+
+# Router for the public, service-to-service API
+public_router = DefaultRouter()
+public_router.register(r"jobs", PublicJobListingViewSet, basename="public-job")
+
+
+urlpatterns = [
+    path("api/", include(resume_router.urls)),
+    path("job_description/", Job_Post.as_view()),
+    path("log-ip/", log_ip_view, name="log_ip"),
+    path("signin", RegistrationView.as_view(), name="registration"),
+    path("verify", OTPVerificationView.as_view()),
+    path("login", LoginView.as_view()),
+    path("logout/<str:empid>/", LogoutView.as_view()),
+    path("forgotpassword", ForgotPasswordView.as_view()),
+    path("forgotpasswordverify", forgotPassOTPVerificationView.as_view()),
+    path("setpassword", SetPasswordView.as_view()),
+    path("changepassword", ChangePasswordView.as_view()),
+    path("UserProfileUpload/<str:userid>/", UserProfileUpdate.as_view()),
+    path("loginuser/<str:login_user>/", loginuserview.as_view()),
+    path("applicationform/<str:param>/", CandidateApplicationView.as_view()),  # post
+    path("Districts/<str:state_name>", Location.as_view()),
+    path("States", States.as_view()),
+    path(
+        "appliedcandidate/<str:can_id>/", CandidateApplicationView.as_view()
+    ),  # get single
+    path("appliedcandidateslist", CandidateApplicationSearchView.as_view()),  # get all
+    path("employee-team-munbers/<str:login_user>/", employeeReportingTeam.as_view()),
+    path("interviewschedule", InterviewSchedulView.as_view()),
+    path("ScreeningAssigning/", ScreeningAssigningView.as_view()),
+    path("ScreeningAssignedCandidate/<str:can_id>/", ScreeningAssigningView.as_view()),
+    path("ScreeningReviewData", ScreeningReviewListView.as_view()),
+    path("InterviewReviewData", InterviewReviewListView.as_view()),
+    path(
+        "InterviewScheduledCandidate/<int:interview_id>/",
+        InterviewScheduledCandidatesData.as_view(),
+    ),
+    path("upload-excel/", ExcelUploadView.as_view(), name="upload_excel"),
+    path("upload-employees-excel-data/", EmployeeExcelUploadView.as_view()),
+    path("download-excel/", AppliedCandidatesDownload.as_view(), name="download_excel"),
+    path("employee-download-excel/", EmployeeDataDownload.as_view()),
+    path("Employees-Upload-Formate/<str:file>/", Download_doc_Sheet.as_view()),
+    path("Candidates/Upload/Formate/<str:file>/", Download_doc_Sheet.as_view()),
+    # candidates search
+    path("AppliedCandidateSearch/<search_value>/", FinalCandidateSearchView.as_view()),
+    # interview process
+    path(
+        "New-Screening-assigned-list/<str:loginuser>/<str:scr_status>/",
+        Screening_assigned_list.as_view(),
+    ),
+    path(
+        "New-Candidate-Screening-list/<str:loginuser>/<str:scr_status>/",
+        Candidate_Screening_list.as_view(),
+    ),
+    path(
+        "New-Interview-assigned-list/<str:loginuser>/<str:scr_status>/",
+        Interview_assigned_list.as_view(),
+    ),
+    path(
+        "New-Candidate-Interview-list/<str:loginuser>/<str:scr_status>/",
+        Candidate_Interview_list.as_view(),
+    ),
+    path(
+        "New-Candidate-Screening-Completed-Details/<str:can_id>/",
+        CandidateScreeningCompletedDetails.as_view(),
+    ),
+    path(
+        "New-Candidate-Interview-Completed-Details/<str:can_id>/",
+        CandidateInterviewCompletedDetails.as_view(),
+    ),
+    # final data
+    path("FinalList/<str:login_user>/", FinalDataView.as_view()),
+    path("FinalStatusUpdate", UpdateFinalStatusView.as_view()),
+    path(
+        "FinalCandidatesList/<str:FinalStatus>/", FinalCandidatesListViewView.as_view()
+    ),
+    path(
+        "FinalCandidatesList/<str:FinalStatus>/<str:duration>/",
+        FinalCandidatesListViewView.as_view(),
+    ),
+    path("FinalResultsCount", FinalResultsCount.as_view()),
+    path("FinalResultsCount/<str:duration>/", FinalResultsCount.as_view()),
+    path(
+        "FinalResultsCountFunction/<str:login_user>/<str:dis_value>/",
+        FinalResultsCountFunction.as_view(),
+    ),
+    path(
+        "FinalResultsData/<str:login_user>/<str:FinalStatus>/",
+        FinalResultsCountFunction.as_view(),
+    ),
+    # documents
+    path(
+        "DocumentsUploadData/<str:can_id>/<str:mail_sended_by>",
+        DocumentsUploadView.as_view(),
+    ),
+    path("DocumentsUploadedList/<str:can_id>/", DocumentsUploadView.as_view()),
+    path("DocumentsUploadForm", DocumentsUploasForm.as_view()),
+    path(
+        "Candidates_Applied_Filter/<str:duration>/", Candidates_Applied_Filter.as_view()
+    ),
+    path(
+        "Filter_FROM_TO_Date/<str:FromDate>/<str:ToDate>/",
+        FilterBasedFromToView.as_view(),
+    ),
+    path("CompleteFinalStatus/<str:can_id>/", CompleteFinalStatusView.as_view()),
+    path("BG_Verification/", BG_VerificationView.as_view()),
+    path("BGVerification/<int:doc_id>/", BG_VerificationView.as_view()),
+    path("BG_Status/<int:doc_instance>/", BG_Status.as_view()),
+    path("BG_VerificationMailSend/", BG_VerificationMailSendView.as_view()),
+    path(
+        "Offerletter/<str:candidate_id>/", SendOfferLetterEmail.as_view()
+    ),  # post and get
+    path(
+        "OfferLetterDetails/<int:offer_id>/", OfferLetterDetails.as_view()
+    ),  # update or approvals patch
+    path("OfferLetterApprovalList/<str:login_user>/", OfferLetterDetails.as_view()),
+    path(
+        "CandidateOfferLetterSending/<int:offer_id>/", SendOfferLetterEmail.as_view()
+    ),  # send offer letter patch
+    # 9/1/2026
+    path(
+        "OfferAcceptStatus/<str:can_id>/",
+        OfferAcceptStatus.as_view(),
+        name="OfferAcceptStatus",
+    ),
+    path("JoiningAppointmentMail", JoiningAppointmentMail.as_view()),
+    path(
+        "PendingJoiningForms", PendingJoiningFormsView.as_view()
+    ),  # New endpoint for pending forms
+    # notifications
+    path(
+        "Candidatenotifications/<str:login_user>/",
+        CandidateAppliedNotifications.as_view(),
+        name="notifications_get",
+    ),
+    path(
+        "AppliedNotifications/Delete/<int:id>/",
+        CandidateAppliedNotifications.as_view(),
+        name="notifications_get_delete",
+    ),
+    path(
+        "Notifications/Delete",
+        CandidateAppliedNotifications.as_view(),
+        name="selected_notifications_get_delete",
+    ),
+    # activity sheet urls
+    path("add_activity/", ActivityView.as_view(), name="add-activity"),  # activity post
+    path(
+        "activity/leads/", IncomingLeadsView.as_view(), name="incoming-leads"
+    ),  # 26/05/2026
+    path(
+        "activity/universal-leads/",
+        UniversalLeadsView.as_view(),
+        name="universal-leads",
+    ),  # 5/6/2026
+    path(
+        "activity/<str:login_user>/", ActivityView.as_view(), name="example-detail"
+    ),  # employee activitys get
+    path(
+        "activity/updel/<int:instance>/", ActivityView.as_view()
+    ),  # employee activitys delete and update
+    path("daily_achives", DailyActivityView.as_view()),  # daily achives post
+    path("daily_achives/<int:instance>/", DailyActivityView.as_view()),
+    path("ActivityListDisplay/<str:login_user>/", ActivityListDisplay.as_view()),
+    path(
+        "ActivityList/Display/<str:filter_value>/<str:employee>/",
+        ActivityListDisplay.as_view(),
+    ),
+    path("EmployeeActivity/<str:employee>/", ActivityListDisplay.as_view()),
+    path(
+        "Activity/Download/<str:start_date>/<str:end_date>/<str:employee>/",
+        ActivityListDisplayDownload.as_view(),
+        name="activity-download",
+    ),
+    path(
+        "InterviewList/Display/<str:filter_value>/<str:employee>/",
+        InterviewListDisplay.as_view(),
+    ),
+    path("InterviewListDisplay/<str:login_user>/", InterviewListDisplay.as_view()),
+    path("Interview_Schedule_activity", InterviewScheduleView.as_view()),  # post
+    path(
+        "Interview_Schedule_activity/updel/<int:instance>/",
+        InterviewScheduleView.as_view(),
+    ),  # update delete
+    path(
+        "Interview_Schedule_activity/<str:login_user>/",
+        InterviewScheduledAchived.as_view(),
+    ),  # get
+    path(
+        "Daily_Interview_Schedule_Achives/<int:instance>/",
+        InterviewScheduledAchived.as_view(),
+    ),  # update
+    path("Walkin_activity/<str:login_user>/", WalkinView.as_view()),  # get
+    path("Daily_Walkins_Achives/<int:instance>/", WalkinView.as_view()),  # update
+    path("Offered_activity/<str:login_user>/", OfferedView.as_view()),  # get
+    path("Daily_Offers_Achives/<int:instance>/", OfferedView.as_view()),  # update
+    # New Activity Urls
+    path(
+        "activity-list/<str:activity_status>/<str:employee_id>",
+        DisplayActivityListView.as_view(),
+    ),
+    path("new-employees-activity/<str:login_user>", AddNewActivitys.as_view()),
+    path("new-assigned-activity/<str:assigned_by>", AddNewActivitys.as_view()),
+    path(
+        "assigned-requirements/<str:recruiter_id>",
+        AssignedRequirementsView.as_view(),
+        name="recruiter-assignments",
+    ),  # 17/4/2026
+    path("create-daily-achieved-activity", CreateNewDailyAchievedActivitys.as_view()),
+    path(
+        "create-daily-achieved-activity/<str:id>",
+        CreateNewDailyAchievedActivitys.as_view(),
+    ),  # 6/6/26
+    # root/create-daily-achieved-activity?login_emp_id=MTM24E1002 -- post
+    # root/create-daily-achieved-activity?activity_list_id=1&login_emp_id=MTM24E1002&date=2024-11-26 -- get
+    path(
+        "display-interviewcalls-date", DisplayInterviewCallsDate.as_view()
+    ),  # not working
+    path(
+        "display--assigned-interviewcalls-date/<str:assigned_by>",
+        DisplayInterviewCallsDate.as_view(),
+    ),  # not working
+    path(
+        "DisplayEmployeeActivitys/<str:login_user>", DisplayEmployeeActivitys.as_view()
+    ),  # to get all interview schedule and walkin schedule
+    path(
+        "CreateInterviewAchievedActivitys", CreateInterviewAchievedActivitys.as_view()
+    ),
+    # http://127.0.0.1:8000/root/CreateInterviewAchievedActivitys?activity_list_id=1&login_emp_id=MTM24E1002&activity_status=walkins&date=2024-11-27
+    path(
+        "CreateInterviewAchievedActivitys420",
+        CreateInterviewAchievedActivitys420.as_view(),
+    ),
+    path(
+        "DisplayEmployeeActivitys420/<str:login_user>",
+        DisplayEmployeeActivitys420.as_view(),
+    ),
+    path("assign-services/<int:id>", AssignServices.as_view()),
+    # dashboard urls
+    path(
+        "department-ratio/", DepartmentRatioAPIView.as_view(), name="department-ratios"
+    ),
+    path(
+        "candidate-gender-diversity/",
+        GenderDiversityAPIView.as_view(),
+        name="gender-diversity",
+    ),
+    path(
+        "employee-diversity/",
+        EmployeeDiversityView.as_view(),
+        name="employee-diversity",
+    ),
+    path(
+        "job-portal-source-count/",
+        JobPortalSourceCountAPIView.as_view(),
+        name="job-portal-source-count",
+    ),
+    path("JPS-Filter", JobPortalSourceFilter.as_view()),
+    path("GetEmployeeCelebrations/", GetEmployeeCelebrations.as_view()),  # wishes
+    path(
+        "DisplayEmployeeCelebrations", DisplayEmployeeCelebrations.as_view()
+    ),  # display wishes
+    path("RecCandidateFillingApplication", RecCandidateFillingApplication.as_view()),
+    path(
+        "called_candidates/",
+        CalledCandidatesListCreate.as_view(),
+        name="called_candidates_list_create",
+    ),
+    path(
+        "Called_Candidates_Search/<str:search_value>/", CalledCandidatesSearch.as_view()
+    ),
+    path(
+        "Called_Candidates_Duration/<str:duration>/", CalledCandidatesSearch.as_view()
+    ),
+    path(
+        "called_candidates/upload_excel/",
+        UploadCalledCandidatesExcel.as_view(),
+        name="upload_excel",
+    ),
+    path(
+        "called_candidates/download_excel/",
+        DownloadCalledCandidatesExcel.as_view(),
+        name="download_excel",
+    ),
+    # ...............PANDAS DOWNLOAD.................
+    path(
+        "PerticularAppliedCandidateDownload/<str:can_id>/",
+        PerticularAppliedCandidateDownload.as_view(),
+    ),
+    path(
+        "ScreeningDownload/<str:loginuser>/<str:can_id>",
+        ScreeningAssignedCandidateDownload.as_view(),
+    ),
+    path(
+        "CompleteDetailsDownload/<str:can_id>/",
+        CompleteFinalStatusDownloadView.as_view(),
+    ),
+    # ///////////////////
+    path("ScreeningDownloadExcel", ScreeningDownloadExcel.as_view()),
+    path("InterviewDownloadExcel", InterviewDownloadExcel.as_view()),
+    path("FinalDownloadExcel", FinalDownloadExcel.as_view()),
+    path("SelectedFinalResultDownloadExcel/<str:selected_list>/", download.as_view()),
+    path("hired_candidates/<str:duration>/", Candidates_Hired_Filter_View.as_view()),
+    path("client_candidates/<str:duration>/", Candidates_Client_Filter_View.as_view()),
+    path(
+        "rejected_candidates/<str:duration>/", Candidates_Rejected_Filter_View.as_view()
+    ),
+    path("Applied_Candidate_Filter", Candidate_Model_Filter.as_view()),
+    path("FinalCandidatelist", Final_Candidate_Model_Filter.as_view()),
+    path(
+        "InterviewScheduledSearch/<str:search_value>/<str:employee>/",
+        InterviewScheduleSearchView.as_view(),
+    ),
+    path(
+        "Interview_filter/<str:Status>/<str:duration>//<str:employee>/",
+        InterviewScheduleSearchView.as_view(),
+    ),
+    path(
+        "ScreeningScheduleSearch/<str:search_value>/<str:src_status>/",
+        ScreeningScheduleSearchView.as_view(),
+    ),
+    path(
+        "Screening_filter/<str:src_status>/<str:duration>/",
+        ScreeningScheduleSearchView.as_view(),
+    ),
+    path("FinalStatusView", FinalStatusView.as_view()),
+    path(
+        "Telephonic_Round_Status_List/<str:loginuser>/",
+        Telephonic_Round_StatusView.as_view(),
+    ),
+    path(
+        "TRS_List_Separation/<str:Employee>/<str:scr_status>/",
+        Telephonic_Round_StatusView.as_view(),
+    ),
+    path(
+        "Screening_Schedule_Data/<str:can_id>/<int:screener>/",
+        Telephonic_Round_StatusView.as_view(),
+    ),
+    path(
+        "Interview_Schedule_List/<str:loginuser>/",
+        Interview_Schedule_StatusView.as_view(),
+    ),
+    path("IS_List_Separation/<str:Employee>/", Interview_Schedule_StatusView.as_view()),
+    path(
+        "Interview_Schedule_Data/<str:can_id>/", Interview_Schedule_StatusView.as_view()
+    ),
+    # ///////////////////////////////////////////
+    # path("bulk-interview-call-upload", BulkInterviewCallUploadView.as_view(), name="bulk-interview-upload"),
+    # changes
+    path(
+        "bulk-activity-upload",
+        BulkActivityUploadView.as_view(),
+        name="bulk-activity-upload",
+    ),
+    path(
+        "download-activity-template",
+        DownloadActivityTemplateView.as_view(),
+        name="download-activity-template",
+    ),
+    path("notifications", NotificationListView.as_view(), name="notification-list"),
+    path(
+        "notifications/mark-as-read",
+        MarkNotificationsAsReadView.as_view(),
+        name="notification-mark-read",
+    ),
+    path(
+        "notifications/delete/<int:notification_id>",
+        NotificationDeleteView.as_view(),
+        name="notification-delete",
+    ),
+    path(
+        "notifications/clear-all",
+        ClearAllNotificationsView.as_view(),
+        name="notification-clear-all",
+    ),
+    path(
+        "activity-dashboard-analytics",
+        ActivityDashboardAnalyticsView.as_view(),
+        name="activity-dashboard-analytics",
+    ),
+    path(
+        "activity-dashboard-details",
+        ActivityDashboardDetailsView.as_view(),
+        name="activity-dashboard-details",
+    ),
+    # 28-01-2026
+    # Follow-up management endpoints
+    path(
+        "activity/convert-to-followup",
+        ConvertToFollowUpView.as_view(),
+        name="convert-to-followup",
+    ),
+    path(
+        "activity/pending-followups",
+        PendingFollowUpsView.as_view(),
+        name="pending-followups",
+    ),
+    # 20/6/26
+    path(
+        "activity/pending-followups-total",
+        PendingFollowupsTotalView.as_view(),
+        name="pending-followups-total",
+    ),
+    #2/7/26
+    path(
+        "activity/pending-followups-interview",
+        PendingFollowupsInterviewView.as_view(),
+        name="pending-followups-interview",
+    ),
+    path(
+        "activity/pending-followups-client",
+        PendingFollowupsClientView.as_view(),
+        name="pending-followups-client",
+    ),
+    path(
+        "activity/scheduled-interview-followups",
+        ScheduledInterviewFollowupsView.as_view(),
+        name="scheduled-interview-followups",
+    ),
+    path(
+        "activity/scheduled-client-followups",
+        ScheduledClientFollowupsView.as_view(),
+        name="scheduled-client-followups",
+    ),
+    path(
+        "activity/pending-followups-today",
+        PendingFollowupsTodayView.as_view(),
+        name="pending-followups-today",
+    ),
+    path(
+        "activity/pending-followups-tomorrow",
+        PendingFollowupsTomorrowView.as_view(),
+        name="pending-followups-tomorrow",
+    ),
+    path(
+        "activity/pending-followups-future",
+        PendingFollowupsFutureView.as_view(),
+        name="pending-followups-future",
+    ),
+    path(
+        "activity/completed-followups",
+        CompletedFollowUpsView.as_view(),
+        name="completed-followups",
+    ),
+    path(
+        "activity/followup/<int:followup_id>/action",
+        FollowUpActionView.as_view(),
+        name="followup-action",
+    ),
+    # Activity pagination endpoints (29-01-2026)
+    # 17/04/2026
+    path(
+        "activity/staged", StagedActivitiesView.as_view(), name="staged-activities-list"
+    ),
+    path(
+        "activity/total-activities",
+        TotalActivitiesView.as_view(),
+        name="total-activities",
+    ),
+    path(
+        "activity/successful-outcomes",
+        SuccessfulOutcomesView.as_view(),
+        name="successful-outcomes",
+    ),
+    path("activity/rejected", RejectedLeadsView.as_view(), name="rejected-leads"),
+    path("activity/closed", ClosedLeadsView.as_view(), name="closed-leads"),
+    path(
+        "activity/interview-calls", InterviewCallsView.as_view(), name="interview-calls"
+    ),
+    path("activity/client-calls", ClientCallsView.as_view(), name="client-calls"),
+    path("activity/job-posts", JobPostsView.as_view(), name="job-posts"),
+    path(
+        "activity/requirement-performance",
+        RequirementPerformanceView.as_view(),
+        name="requirement-performance",
+    ),  # 17/4/2026
+    # 29/04/2026
+    # New Lead Activity Metrics URLs
+    path(
+        "activity/lead-total-calls",
+        LeadTotalCallsView.as_view(),
+        name="lead-total-calls",
+    ),
+    path(
+        "activity/lead-interview-calls",
+        LeadInterviewCallsView.as_view(),
+        name="lead-interview-calls",
+    ),
+    path(
+        "activity/lead-client-calls",
+        LeadClientCallsView.as_view(),
+        name="lead-client-calls",
+    ),
+    # 19/6/26
+    path(
+        "activity/connected-calls", ConnectedCallsView.as_view(), name="connected-calls"
+    ),
+    path(
+        "activity/not-connected-calls",
+        NotConnectedCallsView.as_view(),
+        name="not-connected-calls",
+    ),
+    path(
+        "activity/lead-fresh-calls",
+        LeadFreshCallsView.as_view(),
+        name="lead-fresh-calls",
+    ),
+    path(
+        "activity/lead-followup-calls",
+        LeadFollowupCallsView.as_view(),
+        name="lead-followup-calls",
+    ),
+    path(
+        "activity/selected-candidates",
+        SelectedCandidatesView.as_view(),
+        name="selected-candidates",
+    ),
+    path(
+        "activity/joined-candidates",
+        JoinedCandidatesView.as_view(),
+        name="joined-candidates",
+    ),
+    path(
+        "activity/screening-calls", ScreeningCallsView.as_view(), name="screening-calls"
+    ),
+    #15/7/26
+    path(
+        "activity/internal-hiring", InternalHiringView.as_view(), name="internal-hiring"
+    ),
+    path(
+        "activity/interview-scheduled",
+        ScheduledInterviewsView.as_view(),
+        name="interview-scheduled",
+    ),
+    #16/7/26
+    path(
+        "activity/interview-not-attended",
+        ScheduledNotAttendedView.as_view(),
+        name="interview-not-attended",
+    ),
+    path(
+        "activity/lead-log/<int:activity_id>",
+        LeadActivityLogView.as_view(),
+        name="lead-activity-log",
+    ),
+    # ====================================================
+    # COMPREHENSIVE ANALYTICS DRILLDOWN URLS (28/05/2026)
+    # ====================================================
+    # Section 1: Profiles Added
+    #1/7/26
+    path("activity/profiles-total", ProfilesTotalView.as_view(), name="profiles-total"),
+    path(
+        "activity/profiles-walkin", ProfilesWalkinView.as_view(), name="profiles-walkin"
+    ),
+    path(
+        "activity/profiles-website",
+        ProfilesWebsiteView.as_view(),
+        name="profiles-website",
+    ),
+    path("activity/profiles-crm", ProfilesCrmView.as_view(), name="profiles-crm"),
+    path(
+        "activity/profiles-facebook",
+        ProfilesFacebookView.as_view(),
+        name="profiles-facebook",
+    ),
+    path("activity/profiles-self", ProfilesSelfView.as_view(), name="profiles-self"),
+    path("activity/profiles-bulk", ProfilesBulkView.as_view(), name="profiles-bulk"),
+    #23/6/26
+    path(
+        "activity/client-profiles-bulk",
+        ClientProfilesBulkView.as_view(),
+        name="client-profiles-bulk",
+    ),
+    path(
+        "activity/profiles-assigned",
+        ProfilesAssignedView.as_view(),
+        name="profiles-assigned",
+    ),
+    #2/7/26
+    path(
+        "activity/profiles-assigned-me",
+        ProfilesAssignedView.as_view(),
+        name="profiles-assigned-me",
+    ),
+    path(
+        "activity/profiles-assigned-other",
+        ProfilesAssignedOtherView.as_view(),
+        name="profiles-assigned-other",
+    ),
+    # Section 2: Calls Made
+    path("activity/calls-new", CallsNewView.as_view(), name="calls-new"),
+    path("activity/calls-followup", CallsFollowupView.as_view(), name="calls-followup"),
+    path(
+        "activity/calls-not-picked",
+        CallsNotPickedView.as_view(),
+        name="calls-not-picked",
+    ),
+    # Section 3: Interview Pipeline
+    path(
+        "activity/interview-scheduled-today",
+        InterviewScheduledTodayView.as_view(),
+        name="interview-scheduled-today",
+    ),
+    path(
+        "activity/interview-scheduled-tomorrow",
+        InterviewScheduledTomorrowView.as_view(),
+        name="interview-scheduled-tomorrow",
+    ),
+    path(
+        "activity/interview-scheduled-future",
+        InterviewScheduledFutureView.as_view(),
+        name="interview-scheduled-future",
+    ),
+    path(
+        "activity/interview-attended",
+        InterviewAttendedView.as_view(),
+        name="interview-attended",
+    ),
+    # 19/6/26
+    path("activity/direct-walkins", DirectWalkinsView.as_view(), name="direct-walkins"),
+    path(
+        "activity/scheduled-attended",
+        ScheduledAttendedView.as_view(),
+        name="scheduled-attended",
+    ),
+    # 1/6/2026
+    path(
+        "activity/interview-not-attended",
+        InterviewNotAttendedView.as_view(),
+        name="interview-not-attended",
+    ),
+    path(
+        "activity/interview-followup-pending",
+        InterviewFollowupPendingView.as_view(),
+        name="interview-followup-pending",
+    ),
+    # Section 4: Client Requirement Calls
+    path(
+        "activity/client-req-total",
+        ClientReqTotalView.as_view(),
+        name="client-req-total",
+    ),
+    path("activity/client-req-new", ClientReqNewView.as_view(), name="client-req-new"),
+    path(
+        "activity/client-req-followup",
+        ClientReqFollowupView.as_view(),
+        name="client-req-followup",
+    ),
+    path(
+        "activity/client-req-prospect",
+        ClientReqProspectView.as_view(),
+        name="client-req-prospect",
+    ),
+    path(
+        "activity/client-req-converted",
+        ClientReqConvertedView.as_view(),
+        name="client-req-converted",
+    ),
+    path(
+        "activity/client-req-closed",
+        ClientReqClosedView.as_view(),
+        name="client-req-closed",
+    ),
+    # Section 5: Final Status
+    path("activity/final-offered", FinalOfferedView.as_view(), name="final-offered"),
+    path("activity/final-joined", FinalJoinedView.as_view(), name="final-joined"),
+    path(
+        "activity/final-not-joined",
+        FinalNotJoinedView.as_view(),
+        name="final-not-joined",
+    ),
+    path(
+        "activity/final-rejected-by-us",
+        FinalRejectedByUsView.as_view(),
+        name="final-rejected-by-us",
+    ),
+    path(
+        "activity/final-rejected-by-candidate",
+        FinalRejectedByCandidateView.as_view(),
+        name="final-rejected-by-candidate",
+    ),
+    path(
+        "activity/walkout",
+        WalkoutView.as_view(),
+        name="walkout",
+    ),
+    # Section 6: Pending
+    path(
+        "activity/pending-walkins", PendingWalkinsView.as_view(), name="pending-walkins"
+    ),
+    path(
+        "activity/pending-yet-to-contact",
+        PendingYetToContactView.as_view(),
+        name="pending-yet-to-contact",
+    ),
+    # 17/04/2026
+    # Staged Bulk Upload management
+    path(
+        "activity/staged-activities/<str:login_user>",
+        FetchStagedActivitiesView.as_view(),
+        name="staged-activities",
+    ),
+    path(
+        "activity/activate-staged-activity/<int:activity_id>",
+        ActivateStagedActivityView.as_view(),
+        name="activate-staged-activity",
+    ),
+    path(
+        "interview-dashboard-summary/<str:employee_id>",
+        InterviewActivitySummaryView.as_view(),
+        name="interview-dashboard-summary",
+    ),
+    path(
+        "employee-interview-dashboard/<str:employee_id>",
+        EmployeeInterviewDashboardView.as_view(),
+        name="employee-interview-dashboard",
+    ),
+    # changes2
+    path("lead-stages/", LeadStageListView.as_view(), name="lead-stages"),  # 27/05/2026
+    path(
+        "public/submit-candidate-form",
+        PublicCandidateInterviewCallView.as_view(),
+        name="public-candidate-form",
+    ),
+    path(
+        "public/incoming-lead",
+        IncomingExternalLeadView.as_view(),
+        name="incoming-external-lead",
+    ),
+    path(
+        "public/candidate-referrer-list",
+        CandidateReferrerListView.as_view(),
+        name="candidate-referrer-list",
+    ),
+    ##################################################################
+    # URLs for HR Managers: e.g., /api/manage/jobs/
+    path("manage/", include(manage_router.urls)),
+    # URLs for the external CRM service: e.g., /api/public/jobs/
+    path("public/", include(public_router.urls)),
+    # SSO Routes for HRM-DAS Integration
+    path(
+        "redirect-to-das/<str:employee_id>/",
+        RedirectToDASView.as_view(),
+        name="redirect-to-das",
+    ),
+    path(
+        "api/check-employee-status/<str:email>/",
+        CheckEmployeeStatusAPI.as_view(),
+        name="check-employee-status",
+    ),
+    # DAS Auto-Login Routes (New Implementation)
+    path(
+        "api/employees-active/",
+        GetActiveEmployeesView.as_view(),
+        name="get-active-employees",
+    ),  # For DAS sync
+    path(
+        "api/generate-das-code/",
+        GenerateDASCodeView.as_view(),
+        name="generate-das-code",
+    ),  # Generate auth code
+    path(
+        "api/validate-das-code/",
+        ValidateDASCodeView.as_view(),
+        name="validate-das-code",
+    ),  # Validate auth code
+] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
